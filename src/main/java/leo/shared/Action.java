@@ -281,6 +281,11 @@ public interface Action {
     short UNLOCK_UNITS = 125;
     short SET_GOLD = 126;
     short NOTHING = 127;
+    short JOIN_ARENA = 128;
+    short WATCH_ARENA = 129;
+    short ARENA_STATE = 130;
+    short ARENA_RESULT = 131;
+    short ARENA_TURN = 132;
 
     //Note by default server does not check actions < 50 the same way
     short SET_RANK = -20;
@@ -320,8 +325,9 @@ public interface Action {
     short CHAT_WAITING_RAND = 20;
     short CHAT_WAITING_COOP = 21;
     short CHAT_WAITING_2V2 = 22;
-
     short CHAT_EDIT = 23;
+    short CHAT_WAITING_ARENA = 24;
+    short CHAT_FIGHTING_ARENA = 25;
 
 
     /////////////////////////////////////////////////////////////////

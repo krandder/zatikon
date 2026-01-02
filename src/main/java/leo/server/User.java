@@ -12,6 +12,7 @@ package leo.server;
 
 import leo.client.Client;
 import leo.server.game.*;
+import leo.server.lobby.LobbyAIArena;
 import leo.shared.*;
 import org.tinylog.Logger;
 
@@ -312,6 +313,8 @@ public class User implements Runnable {
             server.sendState(getPlayer(), Action.CHAT_FIGHTING_COOP);
         else if (game instanceof TeamGame)
             server.sendState(getPlayer(), Action.CHAT_FIGHTING_2V2);
+        else if (game instanceof AIArenaGame)
+            server.sendState(getPlayer(), Action.CHAT_FIGHTING_ARENA);
         else if (game instanceof ServerGame) {
             switch (((ServerGame) game).getGameType()) {
                 case Action.GAME_CONSTRUCTED:
@@ -752,6 +755,24 @@ public class User implements Runnable {
                     if(server.getWillShutDown() == true)
                         break;
                     initializePracticeGame();
+                    waiting = true;
+                    cancelled = false;
+                    break;
+
+                case Action.JOIN_ARENA:
+                    if(server.getWillShutDown() == true)
+                        break;
+                    if (initializeArenaGame()) {
+                        waitingGame = Action.CHAT_WAITING_ARENA;
+                    }
+                    waiting = true;
+                    cancelled = false;
+                    break;
+
+                case Action.WATCH_ARENA:
+                    if(server.getWillShutDown() == true)
+                        break;
+                    watchArena();
                     waiting = true;
                     cancelled = false;
                     break;
@@ -1249,6 +1270,60 @@ public class User implements Runnable {
     public boolean initializeTeamGame() {
         server.addToTeamLobby(player);
         return true;
+    }
+
+    /////////////////////////////////////////////////////////////////
+    // Initialize the arena game request
+    /////////////////////////////////////////////////////////////////
+    public boolean initializeArenaGame() {
+        if (!server.arenaEnabled()) {
+            sendText("Arena mode is not enabled on this server.");
+            return false;
+        }
+
+        int aiLevel1 = player.getLevel();
+        int aiLevel2 = player.getLevel();
+        long seed = server.getSeed();
+        byte archiveIndex1 = -1;
+        byte archiveIndex2 = -1;
+
+        try {
+            if (dis.available() >= 4) aiLevel1 = dis.readInt();
+            if (dis.available() >= 4) aiLevel2 = dis.readInt();
+            if (dis.available() >= 8) seed = dis.readLong();
+            if (dis.available() >= 1) archiveIndex1 = dis.readByte();
+            if (dis.available() >= 1) archiveIndex2 = dis.readByte();
+        } catch (Exception e) {
+            Log.error("User.initializeArenaGame " + e);
+        }
+
+        CastleArchive castle1 = getArchive(archiveIndex1);
+        CastleArchive castle2 = getArchive(archiveIndex2);
+
+        LobbyAIArena.ArenaRequest request = new LobbyAIArena.ArenaRequest(aiLevel1, aiLevel2, seed, castle1, castle2);
+        server.addArenaMatch(this, request);
+        server.sendState(getPlayer(), Action.CHAT_WAITING_ARENA);
+        return true;
+    }
+
+    private CastleArchive getArchive(byte index) {
+        CastleArchive[] archives = player.getCastleArchives();
+        if (index < 0 || index >= archives.length) return null;
+        CastleArchive candidate = archives[index];
+        if (candidate != null && candidate.size() > 0) return candidate;
+        return null;
+    }
+
+    /////////////////////////////////////////////////////////////////
+    // Join as a spectator only
+    /////////////////////////////////////////////////////////////////
+    public void watchArena() {
+        if (!server.arenaEnabled()) {
+            sendText("Arena mode is not enabled on this server.");
+            return;
+        }
+        server.addToArenaLobby(this);
+        server.sendState(getPlayer(), Action.CHAT_WAITING_ARENA);
     }
 
 
