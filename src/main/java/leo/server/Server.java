@@ -47,12 +47,15 @@ public class Server {
     private final LobbyPractice lobbyPractice;
     private final LobbyCooperative lobbyCooperative;
     private final LobbyTeam lobbyTeam;
+    private final LobbyAIArena lobbyAIArena;
     private final Random random = new Random();
     private final ServerJanitor janitor;
     private final DatabaseManager dbm;
     private final Vector<ServerGame> gameListMulti = new Vector<ServerGame>();
     private final Vector<PracticeGame> gameListSingle = new Vector<PracticeGame>();
     private final Config config;
+    private final boolean arenaMode;
+    private final boolean arenaLoop;
 
     private volatile boolean running = true;
     private boolean willShutDown = false;
@@ -62,10 +65,16 @@ public class Server {
     /////////////////////////////////////////////////////////////////
 
     public Server(boolean useTls) {
+        this(useTls, false, false);
+    }
+
+    public Server(boolean useTls, boolean arenaMode, boolean arenaLoop) {
         config = new Config();
         Log.setup(config.isLogToTerminal(), config.getLogFile());
 
         dbm = new DatabaseManager();
+        this.arenaMode = arenaMode;
+        this.arenaLoop = arenaLoop;
 
         Log.system("Booting Zatikon Server ver. " + Client.VERSION);
         loginServer = new LoginServer(this, Client.LOGIN_PORT, useTls);
@@ -77,6 +86,10 @@ public class Server {
         lobbyPractice = new LobbyPractice(this);
         lobbyCooperative = new LobbyCooperative(this);
         lobbyTeam = new LobbyTeam(this);
+        lobbyAIArena = arenaMode ? new LobbyAIArena(this, arenaLoop) : null;
+        if (arenaMode) {
+            Log.system("Arena mode enabled" + (arenaLoop ? " with continuous loop" : ""));
+        }
 
         // Start shutdown hook
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -88,8 +101,10 @@ public class Server {
     public static void main(String[] args) {
         var succeeded = new File(Constants.LOCAL_DIR).mkdirs();
         boolean useTls = !(Arrays.asList(args).contains(Constants.STANDALONE_ARG));
+        boolean arenaMode = Arrays.asList(args).contains("--arena") || Arrays.asList(args).contains("--arena-loop");
+        boolean arenaLoop = Arrays.asList(args).contains("--arena-loop");
 
-        instance = new Server(useTls);
+        instance = new Server(useTls, arenaMode, arenaLoop);
 
         // Keep the main thread alive while the server is running
         instance.runServer();
@@ -130,6 +145,7 @@ public class Server {
             if (lobbyPractice != null) lobbyPractice.stop();
             if (lobbyCooperative != null) lobbyCooperative.stop();
             if (lobbyTeam != null) lobbyTeam.stop();
+            if (lobbyAIArena != null) lobbyAIArena.stop();
         } catch (Exception e) {
             Log.error("Error during shutdown: " + e.getMessage());
         }
@@ -250,6 +266,23 @@ public class Server {
     /////////////////////////////////////////////////////////////////
     public void addToTeamLobby(Player player) {
         lobbyTeam.add(player);
+    }
+
+    /////////////////////////////////////////////////////////////////
+    // Add a spectator to the arena lobby
+    /////////////////////////////////////////////////////////////////
+    public void addToArenaLobby(User user) {
+        if (lobbyAIArena == null) return;
+        lobbyAIArena.addSpectator(user);
+    }
+
+    public void addArenaMatch(User user, LobbyAIArena.ArenaRequest request) {
+        if (lobbyAIArena == null) return;
+        lobbyAIArena.scheduleMatch(user, request);
+    }
+
+    public boolean arenaEnabled() {
+        return lobbyAIArena != null;
     }
 
     public void addToNextTeamGame(Player player, short team) {

@@ -139,6 +139,13 @@ If it's necessary for the client to trust the self-signed certificate, it can be
 $ java -cp zatikon.jar -Dtruststore.path=truststore.p12 leo.client.Client
 ```
 
+To run the server as an AI arena for spectating or continuous tournaments, add the arena flags:
+
+```shell
+$ java -cp zatikon.jar leo.server.Server --arena --arena-loop
+```
+
+# How to play?
 
 # How to play?
 
