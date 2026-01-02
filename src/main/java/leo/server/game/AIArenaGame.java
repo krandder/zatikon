@@ -9,7 +9,6 @@ package leo.server.game;
 
 import leo.server.AI;
 import leo.server.GameAction;
-import leo.server.Player;
 import leo.server.Server;
 import leo.server.User;
 import leo.server.observers.ArenaObserver;
