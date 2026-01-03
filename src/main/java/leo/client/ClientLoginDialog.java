@@ -408,6 +408,12 @@ public class ClientLoginDialog extends Dialog
         serverField.setText(server);
         userField.setText(un);
         passwordField.setText(pw);
+        
+        // If connecting to localhost, enable standalone mode
+        if (server != null && (server.equals("localhost") || server.equals("127.0.0.1"))) {
+            standaloneCheckbox.setState(true);
+        }
+        
         login(true);
     }
 

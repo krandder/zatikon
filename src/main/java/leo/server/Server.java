@@ -285,6 +285,16 @@ public class Server {
         return lobbyAIArena != null;
     }
 
+    public Vector<leo.server.game.AIArenaGame> getArenaGameList() {
+        if (lobbyAIArena == null) return new Vector<leo.server.game.AIArenaGame>();
+        return lobbyAIArena.getActiveGames();
+    }
+
+    public boolean watchArenaGame(User user, int gameId) {
+        if (lobbyAIArena == null) return false;
+        return lobbyAIArena.watchGame(user, gameId);
+    }
+
     public void addToNextTeamGame(Player player, short team) {
         lobbyTeam.addToGame(player, team);
     }

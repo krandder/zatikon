@@ -286,6 +286,9 @@ public interface Action {
     short ARENA_STATE = 130;
     short ARENA_RESULT = 131;
     short ARENA_TURN = 132;
+    short NEW_ENEMY_UNIT = 136;
+    short ARENA_GAME_LIST = 133;
+    short WATCH_ARENA_GAME = 134;
 
     //Note by default server does not check actions < 50 the same way
     short SET_RANK = -20;

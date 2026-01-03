@@ -198,6 +198,45 @@ public class ClientNetManager implements Runnable {
         }
     }
 
+    /////////////////////////////////////////////////////////////////
+    // Watch AI Arena games
+    /////////////////////////////////////////////////////////////////
+    public void requestWatchArena() {
+        try {
+            Client.setState("lobby");
+            dos.writeShort(Action.WATCH_ARENA);
+        } catch (Exception e) {
+            Logger.error("req watch arena " + e);
+            Client.getGameData().screenDisconnect();
+        }
+    }
+
+    /////////////////////////////////////////////////////////////////
+    // Request list of active arena games
+    /////////////////////////////////////////////////////////////////
+    public void requestArenaGameList() {
+        try {
+            dos.writeShort(Action.ARENA_GAME_LIST);
+        } catch (Exception e) {
+            Logger.error("req arena game list " + e);
+            Client.getGameData().screenDisconnect();
+        }
+    }
+
+    /////////////////////////////////////////////////////////////////
+    // Watch a specific arena game
+    /////////////////////////////////////////////////////////////////
+    public void requestWatchArenaGame(int gameId) {
+        try {
+            Client.setState("lobby");
+            dos.writeShort(Action.WATCH_ARENA_GAME);
+            dos.writeInt(gameId);
+        } catch (Exception e) {
+            Logger.error("req watch arena game " + e);
+            Client.getGameData().screenDisconnect();
+        }
+    }
+
 
     /////////////////////////////////////////////////////////////////
     // Get the edit army data
@@ -239,6 +278,13 @@ public class ClientNetManager implements Runnable {
             while (active && !Client.shuttingDown() && !Client.timingOut()) {
                 short action = dis.readShort();
                 if (!active) return;
+                
+                // Special handling for actions that don't follow the standard format
+                if (action == Action.ARENA_GAME_LIST) {
+                    getArenaGameList();
+                    continue;
+                }
+                
                 //System.out.println("Run Action received: " + action);
                 short ID = dis.readShort();
                 if (!active) return;
@@ -246,7 +292,18 @@ public class ClientNetManager implements Runnable {
                 short target = dis.readShort();
                 if (!active) return;
                 //System.out.println("Run Target received: " + target);
+                
                 process(action, ID, target);
+                
+                // Add delay in arena mode AFTER processing unit actions to make moves visible
+                // Only delay for unit actions (moves, attacks, spells, skills) to avoid blocking setup
+                if (Client.standalone && Client.getGameData().playing() && action < 30 && action > -1) {
+                    try {
+                        Thread.sleep(1000); // 1 second delay after processing unit action
+                    } catch (InterruptedException e) {
+                        // Ignore interruption
+                    }
+                }
             }
 
             //System.out.println("Main net loop ended.");
@@ -265,14 +322,86 @@ public class ClientNetManager implements Runnable {
         try {
             // System.out.println("received: " + action + ", " + actor + ", " + target);
 
-            // If under 30, it's a unit
-            if (action < 30 && action > -1 && Client.getGameData().playing()) {
-                Unit unit = Client.getGameData().getBattleField().getUnitAt(actor);
-                if (unit == null) {
-                    Logger.error("process called on a null actor");
+            // If under 30, it's a unit action
+            if (action < 30 && action > -1) {
+                // For arena games, we need to be playing to process unit actions
+                if (!Client.getGameData().playing()) {
+                    Logger.debug("Received unit action " + action + " but not in playing state, ignoring");
                     return;
                 }
-                Client.getGameData().getTextBoard().add(unit.performAction(action, target));
+                Unit unit = Client.getGameData().getBattleField().getUnitAt(actor);
+                if (unit == null) {
+                    // In arena mode, try to find unit by searching all units
+                    // This can happen during replay when units have moved or actions are processed quickly
+                    Vector<Unit> allUnits = Client.getGameData().getBattleField().getUnits();
+                    
+                    // Strategy 1: For MOVE actions, the unit should be at the target location after moving
+                    if (action == Action.MOVE) {
+                        unit = Client.getGameData().getBattleField().getUnitAt(target);
+                        if (unit != null) {
+                            Logger.debug("Found unit for move at target: " + unit.getName() + " at " + target);
+                        }
+                    }
+                    
+                    // Strategy 2: Search for unit at actor location (might have moved but action is replayed)
+                    if (unit == null) {
+                        unit = Client.getGameData().getBattleField().getUnitAt(actor);
+                    }
+                    
+                    // Strategy 3: Search all units for one with matching action type AND location near actor/target
+                    if (unit == null) {
+                        Unit bestMatch = null;
+                        int bestDistance = Integer.MAX_VALUE;
+                        for (int i = 0; i < allUnits.size(); i++) {
+                            Unit u = allUnits.elementAt(i);
+                            Vector<Action> actions = u.getActions();
+                            for (int j = 0; j < actions.size(); j++) {
+                                Action a = actions.elementAt(j);
+                                if (a.getType() == action) {
+                                    // Found a unit with matching action type
+                                    // Prefer units closer to the actor location
+                                    int distance = BattleField.getDistance(u.getLocation(), actor);
+                                    if (distance < bestDistance) {
+                                        bestMatch = u;
+                                        bestDistance = distance;
+                                    }
+                                }
+                            }
+                        }
+                        if (bestMatch != null) {
+                            unit = bestMatch;
+                            Logger.debug("Found unit by action type and proximity: " + unit.getName() + " at " + unit.getLocation() + " (distance " + bestDistance + " from " + actor + ")");
+                        }
+                    }
+                    
+                    if (unit == null) {
+                        Logger.warn("process: Unit action " + action + " at location " + actor + " to " + target + " - unit not found (total units: " + allUnits.size() + ")");
+                        // Log all units for debugging
+                        for (int i = 0; i < Math.min(allUnits.size(), 10); i++) {
+                            Unit u = allUnits.elementAt(i);
+                            Logger.debug("  Unit " + i + ": " + u.getName() + " at " + u.getLocation() + ", castle=" + (u.getCastle() == Client.getGameData().getMyCastle() ? "myCastle" : "enemyCastle"));
+                        }
+                        return;
+                    }
+                }
+                // Find the action index for this unit (performAction expects index, not type)
+                Vector<Action> unitActions = unit.getActions();
+                short actionIndex = -1;
+                for (short i = 0; i < unitActions.size(); i++) {
+                    Action a = unitActions.elementAt(i);
+                    if (a.getType() == action) {
+                        actionIndex = i;
+                        break;
+                    }
+                }
+                if (actionIndex == -1) {
+                    Logger.warn("process: Unit " + unit.getName() + " at " + unit.getLocation() + " doesn't have action type " + action);
+                    return;
+                }
+                String result = unit.performAction(actionIndex, target);
+                if (result != null) {
+                    Client.getGameData().getTextBoard().add(result);
+                }
             }
 
             switch (action) {
@@ -347,7 +476,23 @@ public class ClientNetManager implements Runnable {
                     break;
 
                 case Action.DEPLOY:
-                    Client.getGameData().getTextBoard().add(Client.getGameData().getMyCastle().deploy(Unit.TEAM_1, Client.getGameData().getMyCastle().getUnit(actor), target));
+                    Logger.info("DEPLOY received: actor=" + actor + ", target=" + target);
+                    Unit deployUnit = Client.getGameData().getMyCastle().getUnit(actor);
+                    if (deployUnit == null) {
+                        Logger.error("DEPLOY failed: Unit at index " + actor + " not found in myCastle. myCastle has " + Client.getGameData().getMyCastle().getBarracks().size() + " unit types");
+                    } else {
+                        Logger.info("DEPLOY: Deploying " + deployUnit.getName() + " from myCastle to location " + target);
+                        String deployResult = Client.getGameData().getMyCastle().deploy(Unit.TEAM_1, deployUnit, target);
+                        Client.getGameData().getTextBoard().add(deployResult);
+                        // Check if unit was actually deployed
+                        Unit deployedUnit = Client.getGameData().getBattleField().getUnitAt(target);
+                        if (deployedUnit != null) {
+                            Logger.info("DEPLOY: Unit " + deployedUnit.getName() + " deployed at " + target + ", hidden=" + deployedUnit.isHidden() + ", location=" + deployedUnit.getLocation());
+                        } else {
+                            Logger.warn("DEPLOY: Unit not found at target location " + target + " after deploy");
+                        }
+                        Logger.info("DEPLOY: After deploy, battlefield has " + (Client.getGameData().getBattleField() != null ? Client.getGameData().getBattleField().getUnits().size() : 0) + " units");
+                    }
                     break;
 
                 case Action.END_TURN:
@@ -371,8 +516,51 @@ public class ClientNetManager implements Runnable {
                     break;
 
                 case Action.DEPLOY_ENEMY:
-                    Client.getGameData().getEnemyCastle().add(Unit.getUnit(actor, Client.getGameData().getEnemyCastle()));
-                    Client.getGameData().getTextBoard().add(Client.getGameData().getEnemyCastle().deploy(Unit.TEAM_1, Client.getGameData().getEnemyCastle().getUnit(0), target));
+                    // In arena games, units already exist in the castle, so find by index
+                    // In other games, actor is unit ID and we need to add the unit first
+                    Logger.info("DEPLOY_ENEMY received: actor=" + actor + ", target=" + target);
+                    Logger.info("enemyCastle has " + Client.getGameData().getEnemyCastle().getBarracks().size() + " unit types");
+                    Unit enemyUnit = Client.getGameData().getEnemyCastle().getUnit(actor);
+                    if (enemyUnit == null) {
+                        // In arena mode, the unit might have been deployed already before spectator joined
+                        // Check if unit already exists on battlefield at target location
+                        Unit existingUnit = Client.getGameData().getBattleField().getUnitAt(target);
+                        if (existingUnit != null && existingUnit.getCastle() == Client.getGameData().getEnemyCastle()) {
+                            Logger.info("DEPLOY_ENEMY: Unit already deployed at target " + target + ": " + existingUnit.getName());
+                            // Unit already deployed, skip
+                            break;
+                        }
+                        // Unit doesn't exist, try to add it
+                        // In arena mode, we need to figure out the unit ID from the index
+                        // For now, try adding units until we get the right index
+                        Logger.warn("DEPLOY_ENEMY: Unit at index " + actor + " not found in enemyCastle, trying to add units to match index");
+                        Vector<UndeployedUnit> barracks = Client.getGameData().getEnemyCastle().getBarracks();
+                        // Add units until we have enough to reach the index
+                        while (barracks.size() <= actor) {
+                            // We don't know the unit ID, so we can't add it properly
+                            // This is a fallback - ideally the unit should have been sent via NEW_ENEMY_UNIT
+                            Logger.error("DEPLOY_ENEMY: Cannot determine unit ID for index " + actor + ", skipping deploy");
+                            break;
+                        }
+                        if (barracks.size() > actor) {
+                            enemyUnit = Client.getGameData().getEnemyCastle().getUnit(actor);
+                        }
+                    }
+                    if (enemyUnit == null) {
+                        Logger.error("DEPLOY_ENEMY failed: Could not find or create unit at index " + actor);
+                    } else {
+                        Logger.info("DEPLOY_ENEMY: Deploying " + enemyUnit.getName() + " from enemyCastle to location " + target);
+                        String deployResult = Client.getGameData().getEnemyCastle().deploy(Unit.TEAM_1, enemyUnit, target);
+                        Client.getGameData().getTextBoard().add(deployResult);
+                        // Check if unit was actually deployed
+                        Unit deployedUnit = Client.getGameData().getBattleField().getUnitAt(target);
+                        if (deployedUnit != null) {
+                            Logger.info("DEPLOY_ENEMY: Unit " + deployedUnit.getName() + " deployed at " + target + ", hidden=" + deployedUnit.isHidden() + ", location=" + deployedUnit.getLocation());
+                        } else {
+                            Logger.warn("DEPLOY_ENEMY: Unit not found at target location " + target + " after deploy");
+                        }
+                        Logger.info("DEPLOY_ENEMY: After deploy, battlefield has " + (Client.getGameData().getBattleField() != null ? Client.getGameData().getBattleField().getUnits().size() : 0) + " units");
+                    }
                     break;
 
                 case Action.DEPLOY_ENEMY_ALLY:
@@ -381,8 +569,17 @@ public class ClientNetManager implements Runnable {
                     break;
 
                 case Action.NEW_UNIT:
+                    Logger.info("NEW_UNIT received: unitID=" + actor + ", adding to myCastle");
                     Client.getGameData().getMyCastle().add(Unit.getUnit(actor, Client.getGameData().getMyCastle()));
+                    Logger.info("myCastle now has " + Client.getGameData().getMyCastle().getBarracks().size() + " unit types, total units: " + getTotalUnitCount(Client.getGameData().getMyCastle()));
                     Client.getGameData().castleChange();
+                    break;
+
+                case Action.NEW_ENEMY_UNIT:
+                    // Add unit to enemy castle (for arena games)
+                    Logger.info("NEW_ENEMY_UNIT received: unitID=" + actor + ", adding to enemyCastle");
+                    Client.getGameData().getEnemyCastle().add(Unit.getUnit(actor, Client.getGameData().getEnemyCastle()));
+                    Logger.info("enemyCastle now has " + Client.getGameData().getEnemyCastle().getBarracks().size() + " unit types, total units: " + getTotalUnitCount(Client.getGameData().getEnemyCastle()));
                     break;
 
                 case Action.CLEAR_CASTLE:
@@ -449,6 +646,7 @@ public class ClientNetManager implements Runnable {
 
 
                 case Action.START_GAME:
+                    Logger.info("START_GAME received, actor=" + actor);
                     Client.getImages().stopMusic();
                     Client.getGameData().screenGame();
 
@@ -459,6 +657,7 @@ public class ClientNetManager implements Runnable {
                         Client.getGameData().setGameType(Constants.CONSTRUCTED);
                     } else
                         Client.getGameData().setGameType(Constants.RANDOM);
+                    Logger.info("START_GAME processed, playing=" + Client.getGameData().playing() + ", battleField=" + (Client.getGameData().getBattleField() != null));
                     break;
 
                 case Action.ENEMY_LEFT:
@@ -507,7 +706,21 @@ public class ClientNetManager implements Runnable {
 
 
                 case Action.NEW_GAME:
-                    Client.restart();
+                    // For arena games, don't restart - just set up the game screen
+                    // Check if we're waiting for arena or already in arena state
+                    Logger.info("NEW_GAME received, current state: " + Client.getState());
+                    if (Client.getState().equals("home") || Client.getState().equals("lobby") || 
+                        Client.getState().equals("game")) {
+                        // This is likely an arena game starting
+                        Logger.info("Setting up arena game screen");
+                        Client.getImages().stopMusic();
+                        Client.getGameData().screenGame();
+                        Client.getGameData().setPlaying(true);
+                        Logger.info("Game screen set up, playing=" + Client.getGameData().playing());
+                    } else {
+                        Logger.info("Restarting client for NEW_GAME");
+                        Client.restart();
+                    }
                     break;
 
                 case Action.NEW_CASTLE:
@@ -551,6 +764,30 @@ public class ClientNetManager implements Runnable {
 
                 case Action.AI:
                     Client.getGameData().getEnemyCastle().ai();
+                    break;
+
+                case Action.ARENA_STATE:
+                    // Arena game state - level1 in actor, level2 in target
+                    Logger.info("Arena game state: AI Level " + actor + " vs AI Level " + target);
+                    break;
+
+                case Action.ARENA_TURN:
+                    // Arena turn indicator - actor indicates which AI's turn (1 or 2)
+                    Logger.debug("Arena turn: AI " + actor);
+                    if (actor == 1) {
+                        Client.getGameData().setCastlePlaying(Client.getGameData().getMyCastle());
+                    } else if (actor == 2) {
+                        Client.getGameData().setCastlePlaying(Client.getGameData().getEnemyCastle());
+                    }
+                    break;
+
+                case Action.ARENA_RESULT:
+                    // Arena game result
+                    Logger.info("Arena game result received");
+                    break;
+
+                case Action.ARENA_GAME_LIST:
+                    getArenaGameList();
                     break;
 
                 case Action.SEND_ARCHIVE:
@@ -650,6 +887,65 @@ public class ClientNetManager implements Runnable {
         }
     }
 
+
+    /////////////////////////////////////////////////////////////////
+    // Get arena game list
+    /////////////////////////////////////////////////////////////////
+    private void getArenaGameList() {
+        try {
+            int count = dis.readInt();
+            Logger.info("Received arena game list with " + count + " games");
+            Vector<ArenaGameInfo> games = new Vector<ArenaGameInfo>();
+            for (int i = 0; i < count; i++) {
+                int gameId = dis.readInt();
+                int level1 = dis.readInt();
+                int level2 = dis.readInt();
+                int spectatorCount = dis.readInt();
+                short lastWinner = dis.readShort();
+                games.add(new ArenaGameInfo(gameId, level1, level2, spectatorCount, lastWinner));
+                Logger.info("Arena game: ID=" + gameId + ", Level " + level1 + " vs " + level2 + ", Spectators=" + spectatorCount);
+            }
+            // Use EventQueue to ensure UI updates happen on EDT
+            final Vector<ArenaGameInfo> gamesToShow = games;
+            java.awt.EventQueue.invokeLater(() -> {
+                Client.getGameData().showArenaGameList(gamesToShow);
+            });
+        } catch (Exception e) {
+            Logger.error("ClientNetManager.getArenaGameList: " + e);
+            Logger.error("Stack trace: ", e);
+        }
+    }
+
+    /////////////////////////////////////////////////////////////////
+    // Arena game info class
+    /////////////////////////////////////////////////////////////////
+    public static class ArenaGameInfo {
+        public final int gameId;
+        public final int level1;
+        public final int level2;
+        public final int spectatorCount;
+        public final short lastWinner;
+
+        public ArenaGameInfo(int gameId, int level1, int level2, int spectatorCount, short lastWinner) {
+            this.gameId = gameId;
+            this.level1 = level1;
+            this.level2 = level2;
+            this.spectatorCount = spectatorCount;
+            this.lastWinner = lastWinner;
+        }
+    }
+
+    /////////////////////////////////////////////////////////////////
+    // Helper to count total units in a castle
+    /////////////////////////////////////////////////////////////////
+    private int getTotalUnitCount(Castle castle) {
+        int total = 0;
+        Vector<UndeployedUnit> barracks = castle.getBarracks();
+        for (int i = 0; i < barracks.size(); i++) {
+            total += barracks.elementAt(i).count();
+        }
+        return total;
+    }
 
     /////////////////////////////////////////////////////////////////
     // Get the castle archives

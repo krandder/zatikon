@@ -208,7 +208,9 @@ public class RelicPowerUp extends Unit {
         setLocation(target);
         this.getCastle().getObserver().imageDraw(this, target, appearance, 0);
         // give the unit the buff
-        ally.grow(power);
+        if (ally != null) {
+            ally.grow(power);
+        }
 
     }
 

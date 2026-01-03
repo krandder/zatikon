@@ -1,0 +1,230 @@
+2026-01-02 15:57:12 [main] leo.client.Client.main()
+INFO: Starting Zatikon 1.2.0-SNAPSHOT, protocol version 1.1.9
+2026-01-02 15:57:12 [Thread-1] leo.client.GameMedia.load()
+INFO: GameMedia.load() started
+2026-01-02 15:57:12 [Thread-1] leo.client.GameMedia.load()
+INFO: About to load sounds...
+2026-01-02 15:57:12 [Thread-1] leo.client.GameMedia.loadSounds()
+INFO: Loaded sound.jar from: /Users/kas/zatikon/sound.jar
+2026-01-02 15:57:12 [Thread-1] leo.client.GameMedia.loadSounds()
+INFO: loadSounds() completed
+2026-01-02 15:57:12 [Thread-1] leo.client.GameMedia.load()
+INFO: Sounds loaded, setting music volume...
+2026-01-02 15:57:12 [Thread-1] leo.client.GameMedia.load()
+INFO: Music volume set, starting art loading...
+2026-01-02 15:57:12 [Thread-1] leo.client.GameMedia.load()
+INFO: Loaded art.jar from: /Users/kas/zatikon/art.jar
+2026-01-02 15:57:12 [Thread-1] leo.client.GameMedia.load()
+INFO: Successfully accessed test resource from art.jar: jar:file:/Users/kas/zatikon/target/zatikon-1.2.0-SNAPSHOT.jar!/art/splat.png
+2026-01-02 15:57:12 [Thread-1] leo.client.GameMedia.load()
+INFO: Starting to load images...
+2026-01-02 15:57:12 [Thread-1] leo.client.GameMedia.load()
+INFO: First image loaded, continuing with rest...
+2026-01-02 15:57:12 [main] leo.client.Client.main()
+INFO: Attempting autologin
+2026-01-02 15:57:12 [main] leo.server.Config.load()
+INFO: No config file
+2026-01-02 15:57:12 [main] leo.shared.Log.system()
+INFO: SYSTEM: Connecting to DB at jdbc:sqlite:///Users/kas/.local/share/zatikon/zatikon.db
+2026-01-02 15:57:13 [main] leo.server.DatabaseManager.prepare()
+INFO: db version: 1.1.6
+2026-01-02 15:57:13 [main] leo.shared.Log.system()
+INFO: SYSTEM: Booting Zatikon Server ver. 1.2.0-SNAPSHOT
+2026-01-02 15:57:13 [main] leo.shared.Log.system()
+INFO: SYSTEM: Arena mode enabled with continuous loop
+2026-01-02 15:57:13 [LobbyAIArenaThread] leo.server.game.AIArenaGame.buildCastle()
+INFO: buildCastle: Generated castle with 10 unit types
+2026-01-02 15:57:13 [LobbyAIArenaThread] leo.server.game.AIArenaGame.buildCastle()
+INFO: buildCastle: Generated castle with 9 unit types
+2026-01-02 15:57:13 [LobbyAIArenaThread] leo.server.game.AIArenaGame.<init>()
+INFO: AIArenaGame constructor: After buildCastle, castle1 has 10 unit types, castle2 has 9 unit types
+2026-01-02 15:57:13 [LobbyAIArenaThread] leo.server.game.AIArenaGame.<init>()
+INFO: AIArenaGame constructor: Before ai(), castle1 has 10 unit types, castle2 has 9 unit types
+2026-01-02 15:57:13 [LobbyAIArenaThread] leo.server.game.AIArenaGame.<init>()
+INFO: AIArenaGame constructor: After ai(), castle1 has 10 unit types, castle2 has 9 unit types
+2026-01-02 15:57:13 [LobbyAIArenaThread] leo.server.game.AIArenaGame.<init>()
+INFO: AIArenaGame constructor: After refresh(), castle1 has 10 unit types, castle2 has 9 unit types
+2026-01-02 15:57:13 [LobbyAIArenaThread] leo.shared.Log.system()
+INFO: SYSTEM: Started new arena game ID=1, total active games: 1
+2026-01-02 15:57:13 [AIArenaGameThread] leo.server.game.AIArenaGame.processAction()
+INFO: AIArenaGame.DEPLOY: actorLocation=68, target=115, currentCastle=castle1
+2026-01-02 15:57:13 [ChatServerThread] leo.shared.Log.system()
+INFO: SYSTEM: Starting chat server at 0.0.0.0/0.0.0.0:6001
+2026-01-02 15:57:13 [LoginServerThread] leo.shared.Log.system()
+INFO: SYSTEM: Starting login server at 0.0.0.0/0.0.0.0:6000
+2026-01-02 15:57:13 [main] leo.client.ClientLoginDialog.login()
+INFO: Connecting to server
+2026-01-02 15:57:13 [main] leo.client.ClientLoginDialog.login()
+INFO: Attempting login with version 1.1.9
+2026-01-02 15:57:13 [LoginServerThread] leo.shared.Log.system()
+INFO: SYSTEM: Connection received at: /127.0.0.1
+2026-01-02 15:57:13 [Thread-1] leo.client.GameMedia.load()
+INFO: GameMedia.load() completed. artLoaded=true
+2026-01-02 15:57:13 [ChatServerThread] leo.shared.Log.system()
+INFO: SYSTEM: Chat login received at: /127.0.0.1
+2026-01-02 15:57:13 [ChatServerThread] leo.server.ChatUser.<init>()
+INFO: ChatUser thread started
+2026-01-02 15:57:13 [AIArenaGameThread] leo.server.game.AIArenaGame.processAction()
+INFO: AIArenaGame.DEPLOY: actorLocation=4, target=116, currentCastle=castle1
+2026-01-02 15:57:14 [AIArenaGameThread] leo.server.game.AIArenaGame.processAction()
+INFO: AIArenaGame.DEPLOY: actorLocation=80, target=103, currentCastle=castle1
+2026-01-02 15:57:14 [AIArenaGameThread] leo.server.game.AIArenaGame.processAction()
+INFO: AIArenaGame.DEPLOY: actorLocation=80, target=105, currentCastle=castle1
+2026-01-02 15:57:15 [AIArenaGameThread] leo.server.game.AIArenaGame.processAction()
+INFO: AIArenaGame.DEPLOY: actorLocation=25, target=114, currentCastle=castle1
+2026-01-02 15:57:15 [UserThread] leo.shared.Log.system()
+INFO: SYSTEM: getActiveGames: Added currentGame ID=1
+2026-01-02 15:57:15 [UserThread] leo.shared.Log.system()
+INFO: SYSTEM: getActiveGames: Returning 1 active games
+2026-01-02 15:57:15 [UserThread] leo.shared.Log.system()
+INFO: SYSTEM: Sending arena game list with 1 games
+2026-01-02 15:57:15 [ClientNetManagerThread] leo.client.ClientNetManager.getArenaGameList()
+INFO: Received arena game list with 1 games
+2026-01-02 15:57:15 [ClientNetManagerThread] leo.client.ClientNetManager.getArenaGameList()
+INFO: Arena game: ID=1, Level 5 vs 5, Spectators=0
+2026-01-02 15:57:15 [UserThread] leo.shared.Log.system()
+INFO: SYSTEM: Sending game: ID=1, Level 5 vs 5
+2026-01-02 15:57:15 [AWT-EventQueue-0] leo.client.ClientGameData.showArenaGameList()
+INFO: showArenaGameList() called with 1 games
+2026-01-02 15:57:15 [AWT-EventQueue-0] leo.client.ArenaGameListPanel.setGames()
+INFO: ArenaGameListPanel.setGames() called with 1 games
+2026-01-02 15:57:15 [AWT-EventQueue-0] leo.client.ArenaGameListPanel.setGames()
+INFO: Displaying 1 arena games in list
+2026-01-02 15:57:15 [AWT-EventQueue-0] leo.client.ClientGameData.showArenaGameList()
+INFO: Arena game list panel added to mainBoard
+2026-01-02 15:57:15 [AIArenaGameThread] leo.server.game.AIArenaGame.processAction()
+INFO: AIArenaGame.DEPLOY: actorLocation=4, target=104, currentCastle=castle1
+2026-01-02 15:57:16 [AIArenaGameThread] leo.server.game.AIArenaGame.processAction()
+INFO: AIArenaGame.DEPLOY: actorLocation=108, target=117, currentCastle=castle1
+2026-01-02 15:57:16 [UserThread] leo.server.game.AIArenaGame.addSpectator()
+INFO: addSpectator: Adding spectator, castle1 has 0 unit types, castle2 has 9 unit types
+2026-01-02 15:57:16 [UserThread] leo.server.game.AIArenaGame.addSpectator()
+INFO: addSpectator: Sending castle1 to myCastle
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: NEW_GAME received, current state: lobby
+2026-01-02 15:57:16 [UserThread] leo.server.game.AIArenaGame.addSpectator()
+INFO: addSpectator: Sending castle2 to enemyCastle
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: Setting up arena game screen
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientGameData.screenGame()
+INFO: screenGame() called, battleField=true
+2026-01-02 15:57:16 [UserThread] leo.server.game.AIArenaGame.addSpectator()
+INFO: addSpectator: Replaying 2 actions from history
+2026-01-02 15:57:16 [UserThread] leo.server.game.AIArenaGame.addSpectator()
+INFO: addSpectator: Completed spectator setup
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientGameData.screenGame()
+INFO: screenGame() completed, playing=true, battleField=true, myCastle units=0, enemyCastle units=0
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: Game screen set up, playing=true
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: Arena game state: AI Level 5 vs AI Level 5
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: NEW_ENEMY_UNIT received: unitID=21, adding to enemyCastle
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: enemyCastle now has 1 unit types, total units: 1
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: NEW_ENEMY_UNIT received: unitID=68, adding to enemyCastle
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: enemyCastle now has 2 unit types, total units: 2
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: NEW_ENEMY_UNIT received: unitID=20, adding to enemyCastle
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: enemyCastle now has 3 unit types, total units: 3
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: NEW_ENEMY_UNIT received: unitID=20, adding to enemyCastle
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: enemyCastle now has 3 unit types, total units: 4
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: NEW_ENEMY_UNIT received: unitID=77, adding to enemyCastle
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: enemyCastle now has 4 unit types, total units: 5
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: NEW_ENEMY_UNIT received: unitID=15, adding to enemyCastle
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: enemyCastle now has 5 unit types, total units: 6
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: NEW_ENEMY_UNIT received: unitID=51, adding to enemyCastle
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: enemyCastle now has 6 unit types, total units: 7
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: NEW_ENEMY_UNIT received: unitID=118, adding to enemyCastle
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: enemyCastle now has 7 unit types, total units: 8
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: NEW_ENEMY_UNIT received: unitID=104, adding to enemyCastle
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: enemyCastle now has 8 unit types, total units: 9
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: NEW_ENEMY_UNIT received: unitID=1, adding to enemyCastle
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: enemyCastle now has 9 unit types, total units: 10
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: NEW_ENEMY_UNIT received: unitID=1, adding to enemyCastle
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: enemyCastle now has 9 unit types, total units: 11
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: START_GAME received, actor=127
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientGameData.screenGame()
+INFO: screenGame() called, battleField=true
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientGameData.screenGame()
+INFO: screenGame() completed, playing=true, battleField=true, myCastle units=0, enemyCastle units=9
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: START_GAME processed, playing=true, battleField=true
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: START_GAME received, actor=127
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientGameData.screenGame()
+INFO: screenGame() called, battleField=true
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientGameData.screenGame()
+INFO: screenGame() completed, playing=true, battleField=true, myCastle units=0, enemyCastle units=9
+2026-01-02 15:57:16 [ClientNetManagerThread] leo.client.ClientNetManager.process()
+INFO: START_GAME processed, playing=true, battleField=true
+2026-01-02 15:57:16 [AIArenaGameThread] leo.server.game.AIArenaGame.processAction()
+INFO: AIArenaGame.DEPLOY: actorLocation=68, target=5, currentCastle=castle2
+2026-01-02 15:57:17 [AIArenaGameThread] leo.server.game.AIArenaGame.processAction()
+INFO: AIArenaGame.DEPLOY: actorLocation=44, target=17, currentCastle=castle2
+2026-01-02 15:57:17 [AIArenaGameThread] leo.server.game.AIArenaGame.processAction()
+INFO: AIArenaGame.DEPLOY: actorLocation=80, target=15, currentCastle=castle2
+2026-01-02 15:57:18 [AIArenaGameThread] leo.server.game.AIArenaGame.processAction()
+INFO: AIArenaGame.DEPLOY: actorLocation=108, target=27, currentCastle=castle2
+2026-01-02 15:57:18 [AIArenaGameThread] leo.server.game.AIArenaGame.processAction()
+INFO: AIArenaGame.DEPLOY: actorLocation=0, target=16, currentCastle=castle2
+2026-01-02 15:57:19 [AIArenaGameThread] leo.server.game.AIArenaGame.processAction()
+INFO: AIArenaGame.DEPLOY: actorLocation=76, target=4, currentCastle=castle2
+2026-01-02 15:57:19 [AIArenaGameThread] leo.server.game.AIArenaGame.processAction()
+INFO: AIArenaGame.DEPLOY: actorLocation=76, target=6, currentCastle=castle2
+2026-01-02 15:57:20 [AIArenaGameThread] leo.shared.Log.game()
+INFO: GAME: Artificial Opponent: Pikeman moves to 8, 10
+2026-01-02 15:57:20 [AIArenaGameThread] leo.shared.Log.game()
+INFO: GAME: Artificial Opponent: Pikeman moves to 8, 9
+2026-01-02 15:57:20 [Thread-3] leo.client.Client.lambda$main$2()
+INFO: Shutting down scheduler...
+2026-01-02 15:57:20 [Thread-2] leo.shared.Log.system()
+INFO: SYSTEM: Shutdown hook triggered. Shutting down server...
+2026-01-02 15:57:20 [Thread-2] leo.shared.Log.system()
+INFO: SYSTEM: Shutting down server components...
+2026-01-02 15:57:20 [Thread-2] leo.shared.Log.system()
+INFO: SYSTEM: Stopping login server...
+2026-01-02 15:57:20 [Thread-2] leo.shared.Log.system()
+INFO: SYSTEM: Stopping chat server...
+2026-01-02 15:57:20 [ChatUserThread] leo.server.ChatUser.run()
+INFO: Socket closed from remote end or connection reset: Socket closed
+2026-01-02 15:57:20 [ChatUserThread] leo.server.ChatUser.run()
+INFO: ChatUser thread is finishing gracefully.
+2026-01-02 15:57:20 [ServerJanitorThread] leo.shared.Log.system()
+INFO: SYSTEM: ServerJanitor thread was interrupted and is stopping.
+2026-01-02 15:57:20 [Thread-2] leo.shared.Log.system()
+INFO: SYSTEM: Stopping lobby thread...
+2026-01-02 15:57:20 [Thread-2] leo.shared.Log.system()
+INFO: SYSTEM: Stopping LobbyDuel thread...
+2026-01-02 15:57:20 [Thread-2] leo.shared.Log.system()
+INFO: SYSTEM: Stopping lobbyMirror thread...
+2026-01-02 15:57:20 [Thread-2] leo.shared.Log.system()
+INFO: SYSTEM: Stopping lobbyPractice thread...
+2026-01-02 15:57:20 [Thread-2] leo.shared.Log.system()
+INFO: SYSTEM: Stopping lobbyCoop thread...
+2026-01-02 15:57:20 [Thread-2] leo.shared.Log.system()
+INFO: SYSTEM: Stopping lobbyTeam thread...
+2026-01-02 15:57:20 [Thread-2] leo.shared.Log.system()
+INFO: SYSTEM: Stopping lobbyAIArena thread...
+2026-01-02 15:57:20 [Thread-2] leo.shared.Log.system()
+INFO: SYSTEM: Server finished sutting down components, some might take a few more seconds to complete shutdown.

@@ -220,7 +220,9 @@ public class Client {
         System.err.println("Standalone mode - starting local server");
 
         if (server == null) {
-            server = new Server(false);
+            // Enable arena mode by default in standalone mode
+            // arenaLoop = true means it will continuously generate matches
+            server = new Server(false, true, true);
         }
 
         while (!server.isReady()) {

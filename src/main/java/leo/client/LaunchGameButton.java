@@ -104,6 +104,9 @@ public class LaunchGameButton extends LeoComponent {
                 } else if (label == "Mirrored Random") {
                     Client.getNetManager().requestMirrDuel();
                     Client.getGameData().screenLoading("Searching for an opponent, please wait...");
+                } else if (label == "Watch AI Arena") {
+                    Client.getNetManager().requestArenaGameList();
+                    Client.getGameData().screenLoading("Loading arena games...");
                 }
             }
             return true;

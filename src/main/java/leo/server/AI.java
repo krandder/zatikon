@@ -10,6 +10,7 @@ package leo.server;
 
 import leo.server.game.Game;
 import leo.server.script.*;
+import leo.server.script.ScriptInterceptor;
 import leo.shared.*;
 import leo.shared.crusades.*;
 
@@ -79,16 +80,20 @@ public class AI {
         Vector<Unit> units = null;
         try {
 
-            // purge the castle
-            Vector<UndeployedUnit> barracks = castle.getBarracks();
-            for (int i = 0; i < barracks.size(); i++) {
-                UndeployedUnit unit = barracks.elementAt(i);
-                for (int c = 0; c < unit.count(); c++) {
-                    Unit refund = unit.getUnit();
-                    if (refund.getCastleCost() != 1001) points += refund.getCastleCost() / 2;
+            // purge the castle (but not in arena games - they keep their original castle)
+            // Check if this is an arena game by checking if the game implements a specific interface or has a method
+            boolean isArenaGame = (game instanceof leo.server.game.AIArenaGame);
+            if (!isArenaGame) {
+                Vector<UndeployedUnit> barracks = castle.getBarracks();
+                for (int i = 0; i < barracks.size(); i++) {
+                    UndeployedUnit unit = barracks.elementAt(i);
+                    for (int c = 0; c < unit.count(); c++) {
+                        Unit refund = unit.getUnit();
+                        if (refund.getCastleCost() != 1001) points += refund.getCastleCost() / 2;
+                    }
                 }
+                castle.clear();
             }
-            castle.clear();
 
             // collect a list of what we've got
             units = listUnits();

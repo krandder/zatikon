@@ -9,6 +9,7 @@ package leo.shared.crusades;
 // imports
 
 import leo.shared.*;
+import leo.shared.crusades.ActionBrew;
 
 import java.util.Vector;
 

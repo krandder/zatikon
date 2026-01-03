@@ -73,6 +73,7 @@ public class ClientGameData {
     private final DrawButton drawButton = new DrawButton(endPanel);
     private LoadingPanel loadingPanel = new LoadingPanel();
     private TeamLoadingPanel teamLoadingPanel = new TeamLoadingPanel();
+    private ArenaGameListPanel arenaGameListPanel = new ArenaGameListPanel();
     private TimeOutPanel timeOutPanel = new TimeOutPanel();
     private final VersusPanel versusPanel = new VersusPanel();
     private RosterPanel rosterPanel = new RosterPanel(false);
@@ -317,11 +318,18 @@ public class ClientGameData {
     // SetScreen to the game
     /////////////////////////////////////////////////////////////////
     public void screenGame() {
+        Logger.info("screenGame() called, battleField=" + (battleField != null));
         playing = true;
         Client.setState("game");
         mainBoard.clear();
         Client.getText().clear();
         Client.getMessageBuffer().delete(0, Client.getMessageBuffer().length());
+
+        // Ensure battlefield is initialized
+        if (battleField == null) {
+            Logger.info("BattleField is null, initializing...");
+            initBattle();
+        }
 
         //mainBoard.add(tutorialBoard);
         mainBoard.add(checkerBoard);
@@ -330,6 +338,8 @@ public class ClientGameData {
 
         //mainBoard.add(castleBoard);
         //mainBoard.add(textBoard);
+        
+        Logger.info("screenGame() completed, playing=" + playing + ", battleField=" + (battleField != null) + ", myCastle units=" + myCastle.getBarracks().size() + ", enemyCastle units=" + enemyCastle.getBarracks().size());
 
     }
 
@@ -353,6 +363,19 @@ public class ClientGameData {
         Client.setState("home");
     }
 
+    /////////////////////////////////////////////////////////////////
+    // Show arena game list
+    /////////////////////////////////////////////////////////////////
+    public void showArenaGameList(Vector<ClientNetManager.ArenaGameInfo> games) {
+        Logger.info("showArenaGameList() called with " + games.size() + " games");
+        mainBoard.clear();
+        arenaGameListPanel = new ArenaGameListPanel();
+        arenaGameListPanel.setGames(games);
+        mainBoard.add(arenaGameListPanel);
+        mainBoard.add(playerPanel);
+        mainBoard.queue();
+        Logger.info("Arena game list panel added to mainBoard");
+    }
 
     /////////////////////////////////////////////////////////////////
     // SetScreen to lose link
@@ -446,7 +469,8 @@ public class ClientGameData {
     public void clickAt(int x, int y) {
         // Fire away
         //System.out.println("Click at " + x + ", " + y);
-        if(Client.standalone && Client.getGameData().playing() && Client.getGameData().getTimer().getPaused() == true)
+        if(Client.standalone && Client.getGameData().playing() && 
+           Client.getGameData().getTimer() != null && Client.getGameData().getTimer().getPaused() == true)
             Client.getGameData().getTimer().togglePaused();
         mainBoard.clickAt(x, y);
     }

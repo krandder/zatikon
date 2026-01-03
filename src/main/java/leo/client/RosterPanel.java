@@ -144,9 +144,15 @@ public class RosterPanel extends LeoContainer {
                 "Save and load army configurations.", Client.standalone || noob, Client.standalone ? "ONLINE ONLY." : "COMPLETE THE TUTORIAL FIRST!");
         add(archiveButton);
 
+        // Watch AI Arena
+        LaunchGameButton arenaButton = new LaunchGameButton(
+                this, buttonX, 405, 38, 38, Constants.IMG_RANDOM_RED, "Watch AI Arena",
+                "Watch AI vs AI arena matches. Spectate ongoing games or wait for new matches to start.", false, "");
+        add(arenaButton);
+
         // Buy Unit
         LaunchGameButton buyButton = new LaunchGameButton(
-                this, buttonX, 405, 38, 38, Constants.IMG_BUY_RED, "Buy New Unit",
+                this, buttonX, 447, 38, 38, Constants.IMG_BUY_RED, "Buy New Unit",
                 "Buy a randomly selected, new unit for your army for 100 gold.", Client.standalone || noob, Client.standalone ? "ONLINE ONLY." : "COMPLETE THE TUTORIAL FIRST!");
         add(buyButton);
 

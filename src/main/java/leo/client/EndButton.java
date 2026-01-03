@@ -49,6 +49,7 @@ public class EndButton extends LeoComponent {
     public void draw(Graphics2D g, Frame mainFrame) {
         if (!Client.getGameData().myTurn()) return;
         try {
+            if (Client.getGameData().getTimer() == null) return;
 
             int minutes = Client.getGameData().getTimer().getTime() / 60;
             int seconds = Client.getGameData().getTimer().getTime() % 60;

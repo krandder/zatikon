@@ -777,6 +777,20 @@ public class User implements Runnable {
                     cancelled = false;
                     break;
 
+                case Action.ARENA_GAME_LIST:
+                    if(server.getWillShutDown() == true)
+                        break;
+                    sendArenaGameList();
+                    break;
+
+                case Action.WATCH_ARENA_GAME:
+                    if(server.getWillShutDown() == true)
+                        break;
+                    watchArenaGame();
+                    waiting = true;
+                    cancelled = false;
+                    break;
+
 
                 case Action.COOPERATIVE:
                     if(server.getWillShutDown() == true)
@@ -1324,6 +1338,54 @@ public class User implements Runnable {
         }
         server.addToArenaLobby(this);
         server.sendState(getPlayer(), Action.CHAT_WAITING_ARENA);
+    }
+
+    /////////////////////////////////////////////////////////////////
+    // Send list of active arena games
+    /////////////////////////////////////////////////////////////////
+    public void sendArenaGameList() {
+        if (!server.arenaEnabled()) {
+            sendText("Arena mode is not enabled on this server.");
+            return;
+        }
+        try {
+            Vector<leo.server.game.AIArenaGame> games = server.getArenaGameList();
+            Log.system("Sending arena game list with " + games.size() + " games");
+            dos.writeShort(Action.ARENA_GAME_LIST);
+            dos.writeInt(games.size());
+            for (int i = 0; i < games.size(); i++) {
+                leo.server.game.AIArenaGame game = games.elementAt(i);
+                dos.writeInt(game.getGameId());
+                dos.writeInt(game.getLevel1());
+                dos.writeInt(game.getLevel2());
+                dos.writeInt(game.getSpectatorCount());
+                dos.writeShort(game.getLastWinner());
+                Log.system("Sending game: ID=" + game.getGameId() + ", Level " + game.getLevel1() + " vs " + game.getLevel2());
+            }
+        } catch (Exception e) {
+            Log.error("User.sendArenaGameList " + e);
+        }
+    }
+
+    /////////////////////////////////////////////////////////////////
+    // Watch a specific arena game
+    /////////////////////////////////////////////////////////////////
+    public void watchArenaGame() {
+        if (!server.arenaEnabled()) {
+            sendText("Arena mode is not enabled on this server.");
+            return;
+        }
+        try {
+            int gameId = dis.readInt();
+            if (server.watchArenaGame(this, gameId)) {
+                server.sendState(getPlayer(), Action.CHAT_WAITING_ARENA);
+            } else {
+                sendText("Arena game not found or already finished.");
+            }
+        } catch (Exception e) {
+            Log.error("User.watchArenaGame " + e);
+            sendText("Error joining arena game.");
+        }
     }
 
 

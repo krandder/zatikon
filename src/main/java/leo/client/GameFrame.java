@@ -156,7 +156,11 @@ public class GameFrame extends Frame implements MouseListener, MouseMotionListen
     // When the mouse is clicked
     /////////////////////////////////////////////////////////////////
     public void mousePressed(MouseEvent e) {
-        Client.getGameData().getPlayerPanel().mousePressed();
+        try {
+            Client.getGameData().getPlayerPanel().mousePressed();
+        } catch (Exception ex) {
+            Logger.error("GameFrame.mousePressed() " + ex);
+        }
         try {
 
             while (Client.drawing()) {

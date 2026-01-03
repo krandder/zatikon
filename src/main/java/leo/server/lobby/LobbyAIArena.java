@@ -32,6 +32,8 @@ public class LobbyAIArena implements Runnable {
     private final boolean autoLoop;
     private volatile boolean running = true;
     private volatile AIArenaGame currentGame = null;
+    private final Vector<AIArenaGame> activeGames = new Vector<AIArenaGame>();
+    private int nextGameId = 1;
 
 
     /////////////////////////////////////////////////////////////////
@@ -91,9 +93,29 @@ public class LobbyAIArena implements Runnable {
             try {
                 cleanSpectators();
 
+                // Clean up finished games
+                for (int i = activeGames.size() - 1; i >= 0; i--) {
+                    AIArenaGame game = activeGames.elementAt(i);
+                    if (game.over()) {
+                        activeGames.removeElementAt(i);
+                        Log.system("Removed finished game ID=" + game.getGameId() + " from activeGames");
+                    }
+                }
+                // Also clear currentGame if it's over
+                if (currentGame != null && currentGame.over()) {
+                    Log.system("currentGame ID=" + currentGame.getGameId() + " is over, will be replaced");
+                }
+
+                // Start new game if needed
                 if ((currentGame == null || currentGame.over()) && (requests.size() > 0 || autoLoop)) {
+                    // Remove finished currentGame from activeGames if it exists
+                    if (currentGame != null && currentGame.over()) {
+                        activeGames.remove(currentGame);
+                    }
+                    
                     ArenaRequest request = requests.size() > 0 ? requests.remove(0) : defaultRequest();
                     try {
+                        int gameId = nextGameId++;
                         currentGame = new AIArenaGame(
                                 server,
                                 request.aiLevel1,
@@ -101,9 +123,13 @@ public class LobbyAIArena implements Runnable {
                                 request.castle1,
                                 request.castle2,
                                 request.seed != null ? request.seed : server.getSeed(),
-                                "AI 1",
-                                "AI 2"
+                                "AI Level " + request.aiLevel1,
+                                "AI Level " + request.aiLevel2,
+                                gameId
                         );
+                        // Add to activeGames immediately when created
+                        activeGames.add(currentGame);
+                        Log.system("Started new arena game ID=" + gameId + ", total active games: " + activeGames.size());
                     } catch (Exception e) {
                         Logger.error("LobbyAIArena starting game: " + e);
                         currentGame = null;
@@ -169,6 +195,54 @@ public class LobbyAIArena implements Runnable {
         }
     }
 
+
+    /////////////////////////////////////////////////////////////////
+    // Get list of active games
+    /////////////////////////////////////////////////////////////////
+    public Vector<AIArenaGame> getActiveGames() {
+        Vector<AIArenaGame> games = new Vector<AIArenaGame>();
+        // Include currentGame if it exists and is not over
+        if (currentGame != null && !currentGame.over()) {
+            games.add(currentGame);
+            Log.system("getActiveGames: Added currentGame ID=" + currentGame.getGameId());
+        }
+        // Also include any other active games
+        for (int i = 0; i < activeGames.size(); i++) {
+            AIArenaGame game = activeGames.elementAt(i);
+            if (!game.over() && game != currentGame) {
+                games.add(game);
+                Log.system("getActiveGames: Added game ID=" + game.getGameId());
+            }
+        }
+        Log.system("getActiveGames: Returning " + games.size() + " active games");
+        return games;
+    }
+
+    /////////////////////////////////////////////////////////////////
+    // Get a specific game by ID
+    /////////////////////////////////////////////////////////////////
+    public AIArenaGame getGameById(int gameId) {
+        for (int i = 0; i < activeGames.size(); i++) {
+            AIArenaGame game = activeGames.elementAt(i);
+            if (game.getGameId() == gameId && !game.over()) {
+                return game;
+            }
+        }
+        return null;
+    }
+
+    /////////////////////////////////////////////////////////////////
+    // Watch a specific game
+    /////////////////////////////////////////////////////////////////
+    public boolean watchGame(User user, int gameId) {
+        AIArenaGame game = getGameById(gameId);
+        if (game != null) {
+            game.addSpectator(user);
+            if (!spectators.contains(user)) spectators.add(user);
+            return true;
+        }
+        return false;
+    }
 
     /////////////////////////////////////////////////////////////////
     // Stop the lobby thread

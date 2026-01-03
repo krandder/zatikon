@@ -43,7 +43,13 @@ public class BackBoard extends LeoContainer {
             else
                 image = Client.getImages().getImage(Constants.IMG_BACK_PANEL);
 
-            g.drawImage(image, getScreenX(), getScreenY(), mainFrame);
+            if (image == null) {
+                // Images not loaded yet, draw a simple colored rectangle instead
+                g.setColor(color != null ? color : Color.GRAY);
+                g.fillRect(getScreenX(), getScreenY(), getWidth(), getHeight());
+            } else {
+                g.drawImage(image, getScreenX(), getScreenY(), mainFrame);
+            }
             super.draw(g, mainFrame);
         } catch (Exception e) {
             Logger.error("BackBoard.draw(): " + e);

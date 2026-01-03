@@ -44,7 +44,8 @@ public class DrawButton extends LeoComponent {
         Client.getImages().playSound(Constants.SOUND_BUTTON);
         if(Client.standalone) {
             if(Client.getGameData().getTimer().getjustUnpaused() == false) {
-                Client.getGameData().getTimer().togglePaused();                
+                if (Client.getGameData().getTimer() != null)
+                    Client.getGameData().getTimer().togglePaused();                
             }
             return true;
         } else {
@@ -70,7 +71,7 @@ public class DrawButton extends LeoComponent {
         try {
             String message;
             if(Client.standalone)
-                message = Client.getGameData().getTimer().getPaused() ? "Unpause" : "Pause";
+                message = (Client.getGameData().getTimer() != null && Client.getGameData().getTimer().getPaused()) ? "Unpause" : "Pause";
             else
                 message = Client.getGameData().drawOffered() ? "Accept Draw" : "Offer Draw";
 
