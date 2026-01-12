@@ -1,0 +1,1711 @@
+#!/usr/bin/env python3
+"""
+AlphaZero-style engine for Zatikon.
+
+- Implements Zatikon game rules
+- CNN policy+value network (PyTorch)
+- MCTS for move selection
+- Self-play training loop
+
+Requires:
+    pip install numpy torch
+"""
+
+import math
+import random
+import time
+import os
+import glob
+import json
+import copy
+import pickle
+from collections import defaultdict, deque
+from functools import lru_cache
+from typing import List, Tuple, Optional, Dict, Any
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from zatikon import constants
+from zatikon.game import Game
+from zatikon.battlefield import BattleField
+from zatikon.random_ai import RandomAI
+from zatikon.state_encoder import encode_game_state, get_total_plane_count
+
+
+# ---------- Game state representation ----------
+
+BOARD_SIZE = constants.BOARD_SIZE  # 11
+MAX_LOCATIONS = BOARD_SIZE * BOARD_SIZE  # 121
+MAX_BARRACKS = 20  # Reasonable upper bound
+MAX_COMMANDS = constants.MAX_COMMANDS  # 5
+
+# Action encoding:
+# - Deploy: action_type=0, barracks_index (0-19), location (0-120)
+# - Move: action_type=1, from_location (0-120), to_location (0-120)
+# - Attack: action_type=2, from_location (0-120), to_location (0-120)
+# - End Turn: action_type=3
+# Total action space: 4 + (20 * 121) + (121 * 121) + (121 * 121) = ~29,000
+# But we'll use a sparse encoding: action_type + params
+
+ACTION_DEPLOY = 0
+ACTION_MOVE = 1
+ACTION_ATTACK = 2
+ACTION_END_TURN = 3
+
+# For neural network, we'll use a flattened action space
+# Format: [deploy_actions, move_actions, attack_actions, end_turn]
+# Deploy: MAX_BARRACKS * MAX_LOCATIONS = 20 * 121 = 2420
+# Move: MAX_LOCATIONS * MAX_LOCATIONS = 121 * 121 = 14641
+# Attack: MAX_LOCATIONS * MAX_LOCATIONS = 121 * 121 = 14641
+# End turn: 1
+ACTION_SIZE = (MAX_BARRACKS * MAX_LOCATIONS) + (MAX_LOCATIONS * MAX_LOCATIONS) + (MAX_LOCATIONS * MAX_LOCATIONS) + 1
+ACTION_SIZE = 2420 + 14641 + 14641 + 1  # 31703
+
+
+# encode_game_state is now imported from state_encoder
+
+
+def get_legal_actions(game: Game) -> List[Tuple[int, int, int]]:
+    """
+    Get all legal actions for current player.
+    
+    Returns:
+        List of (action_type, param1, param2) tuples
+    """
+    actions = []
+    
+    # Deploy actions
+    castle = game.get_current_castle()
+    deploy_targets = game._get_castle_targets(castle)
+    
+    for barracks_idx, unit in enumerate(castle.barracks):
+        deploy_cost = getattr(unit, 'deploy_cost', 0)
+        if castle.commands_left >= deploy_cost:
+            for location in deploy_targets:
+                actions.append((ACTION_DEPLOY, barracks_idx, location))
+    
+    # Move actions
+    for unit in game.battlefield.units:
+        if unit.castle != castle:
+            continue
+        if not unit.deployed() or unit.dead:
+            continue
+        
+        if unit.move_action:
+            move_targets = unit.move_action.get_targets()
+            for target in move_targets:
+                actions.append((ACTION_MOVE, unit.location, target))
+    
+    # Attack actions
+    for unit in game.battlefield.units:
+        if unit.castle != castle:
+            continue
+        if not unit.deployed() or unit.dead:
+            continue
+        
+        if unit.attack_action:
+            attack_targets = unit.attack_action.get_targets()
+            for target in attack_targets:
+                actions.append((ACTION_ATTACK, unit.location, target))
+    
+    # End turn (always legal)
+    actions.append((ACTION_END_TURN, 0, 0))
+    
+    return actions
+
+
+def action_to_index(action_type: int, param1: int, param2: int) -> int:
+    """
+    Convert action tuple to index in action space.
+    """
+    if action_type == ACTION_DEPLOY:
+        return param1 * MAX_LOCATIONS + param2
+    elif action_type == ACTION_MOVE:
+        offset = MAX_BARRACKS * MAX_LOCATIONS
+        return offset + param1 * MAX_LOCATIONS + param2
+    elif action_type == ACTION_ATTACK:
+        offset = MAX_BARRACKS * MAX_LOCATIONS + MAX_LOCATIONS * MAX_LOCATIONS
+        return offset + param1 * MAX_LOCATIONS + param2
+    elif action_type == ACTION_END_TURN:
+        return ACTION_SIZE - 1
+    else:
+        raise ValueError(f"Unknown action type: {action_type}")
+
+
+def index_to_action(idx: int) -> Tuple[int, int, int]:
+    """
+    Convert action index back to action tuple.
+    """
+    if idx == ACTION_SIZE - 1:
+        return (ACTION_END_TURN, 0, 0)
+    
+    deploy_size = MAX_BARRACKS * MAX_LOCATIONS
+    move_size = MAX_LOCATIONS * MAX_LOCATIONS
+    
+    if idx < deploy_size:
+        barracks_idx = idx // MAX_LOCATIONS
+        location = idx % MAX_LOCATIONS
+        return (ACTION_DEPLOY, barracks_idx, location)
+    elif idx < deploy_size + move_size:
+        idx -= deploy_size
+        from_loc = idx // MAX_LOCATIONS
+        to_loc = idx % MAX_LOCATIONS
+        return (ACTION_MOVE, from_loc, to_loc)
+    else:
+        idx -= deploy_size + move_size
+        from_loc = idx // MAX_LOCATIONS
+        to_loc = idx % MAX_LOCATIONS
+        return (ACTION_ATTACK, from_loc, to_loc)
+
+
+def apply_action(game: Game, action_type: int, param1: int, param2: int) -> str:
+    """
+    Apply an action to the game state.
+    
+    Returns:
+        Result message (or "Invalid" if action failed)
+    """
+    if action_type == ACTION_DEPLOY:
+        result = game.handle_action(constants.ACTION_DEPLOY, param1, param2)
+    elif action_type == ACTION_MOVE:
+        result = game.handle_action(constants.ACTION_MOVE, param1, param2)
+    elif action_type == ACTION_ATTACK:
+        result = game.handle_action(constants.ACTION_ATTACK, param1, param2)
+    elif action_type == ACTION_END_TURN:
+        result = game.handle_action(constants.ACTION_END_TURN, 0, 0)
+    else:
+        return "Invalid"
+    
+    return result
+
+
+def terminal_value(game: Game, perspective_player: int) -> Optional[float]:
+    """
+    Check if game is terminal and return value from specified player's perspective.
+
+    Args:
+        game: The game state
+        perspective_player: The player whose perspective to use (TEAM_1 or TEAM_2)
+
+    Returns:
+        None if non-terminal
+        1.0 if perspective_player wins
+        -1.0 if perspective_player loses
+        0.0 if draw
+    """
+    if not game.is_over():
+        return None
+
+    winner = game.check_victory()
+    if winner is None:
+        return 0.0  # Draw
+
+    perspective_castle = game.castle1 if perspective_player == constants.TEAM_1 else game.castle2
+    if winner == perspective_castle:
+        return 1.0  # Perspective player wins
+    else:
+        return -1.0  # Perspective player loses
+
+
+# ---------- Neural Network ----------
+
+class ZatikonNet(nn.Module):
+    """
+    Neural network for Zatikon AlphaZero.
+    """
+    
+    def __init__(self):
+        super().__init__()
+        N_PLANES = get_total_plane_count()
+        
+        # Convolutional layers
+        self.conv1 = nn.Conv2d(N_PLANES, 128, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        self.conv4 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        
+        # Common fully connected layers
+        self.fc_common = nn.Linear(128 * BOARD_SIZE * BOARD_SIZE, 512)
+        
+        # Policy head
+        self.fc_policy = nn.Linear(512, ACTION_SIZE)
+        
+        # Value head - outputs win%, lose%, draw% probabilities
+        self.fc_value1 = nn.Linear(512, 256)
+        self.fc_value2 = nn.Linear(256, 3)  # 3 outputs: win, lose, draw
+    
+    def forward(self, x):
+        """
+        Forward pass.
+
+        Args:
+            x: (batch, N_PLANES, BOARD_SIZE, BOARD_SIZE) tensor
+
+        Returns:
+            logits: (batch, ACTION_SIZE) policy logits
+            value_probs: (batch, 3) probabilities for [win, lose, draw]
+        """
+        # Convolutional layers
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+
+        # Flatten
+        x = x.view(x.size(0), -1)
+        x = F.relu(self.fc_common(x))
+
+        # Policy head
+        logits = self.fc_policy(x)
+
+        # Value head - outputs win%, lose%, draw% probabilities
+        v = F.relu(self.fc_value1(x))
+        v_logits = self.fc_value2(v)  # (batch, 3)
+        v_probs = F.softmax(v_logits, dim=-1)  # Normalize to probabilities
+
+        return logits, v_probs
+
+
+# ---------- Game State Copying ----------
+
+def copy_game(game: Game) -> Game:
+    """
+    Create a deep copy of the game state for MCTS simulation.
+    
+    Returns:
+        Deep copy of the game
+    """
+    return copy.deepcopy(game)
+
+
+# ---------- Turn-Based MCTS ----------
+
+CPUCT = 1.5
+
+
+class TurnNode:
+    """
+    Represents a node in the MCTS tree.
+    Each node corresponds to a complete turn (sequence of actions).
+    """
+    
+    def __init__(self, action_sequence: List[Tuple[int, int, int]], 
+                 state_end_encoded: np.ndarray,
+                 state_key: str):
+        """
+        Initialize a turn node.
+        
+        Args:
+            action_sequence: List of (action_type, param1, param2) tuples
+            state_end_encoded: Encoded state after the turn (opponent's turn)
+            state_key: String key for the state after turn
+        """
+        self.action_sequence = action_sequence
+        self.state_end_encoded = state_end_encoded
+        self.state_key = state_key
+        
+        # MCTS statistics
+        self.visits = 0
+        self.total_value = 0.0
+        self.children: List[TurnNode] = []
+        
+        # Cached value from network
+        self.cached_value: Optional[float] = None
+    
+    @property
+    def value(self) -> float:
+        """Average value of this node."""
+        if self.visits == 0:
+            return 0.0
+        return self.total_value / self.visits
+
+
+class MCTS:
+    """
+    Turn-based Monte Carlo Tree Search for Zatikon.
+    
+    Each node in the tree represents a complete turn (sequence of actions).
+    The tree explores different turn sequences from each state.
+    """
+    
+    def __init__(self, net: ZatikonNet, n_simulations: int = 200):
+        self.net = net
+        self.n_simulations = n_simulations
+        self.root: Optional[TurnNode] = None
+        self.node_map: Dict[str, TurnNode] = {}  # state_key -> TurnNode
+    
+    def state_key(self, game: Game) -> str:
+        """
+        Create a unique key for game state at turn start.
+        Note: This is simplified - in practice you might want a more robust hash.
+        """
+        # Create a simple hash from unit positions and game state
+        unit_positions = []
+        for unit in sorted(game.battlefield.units, key=lambda u: (u.team, u.location)):
+            if not unit.dead:
+                unit_positions.append((unit.team, unit.location, unit.unit_id))
+        
+        key_parts = [
+            str(game.current_player),
+            str(game.turn_number),
+            str(game.castle1.commands_left),
+            str(game.castle2.commands_left),
+            str(tuple(unit_positions)),
+        ]
+        return "|".join(key_parts)
+    
+    def generate_turn(self, game: Game, temp: float = 1.0) -> Tuple[List[Tuple], List[Tuple]]:
+        """
+        Generate a complete turn by sampling actions from network policy.
+        
+        Args:
+            game: Game state at turn start
+            temp: Temperature for sampling (1.0 = normal, 0.0 = greedy)
+            
+        Returns:
+            (turn_actions, turn_training_data)
+            turn_actions: List of (action_type, param1, param2) tuples
+            turn_training_data: List of (state_before_action, action, policy, action_idx) tuples
+        """
+        turn_actions = []
+        turn_training_data = []
+        initial_player = game.current_player
+        
+        while True:
+            # Check for terminal state
+            tv = terminal_value(game, game.current_player)
+            if tv is not None:
+                break
+            
+            # Get network policy
+            state_before = encode_game_state(game)
+            with torch.no_grad():
+                x = torch.tensor(state_before[None, :, :, :], dtype=torch.float32)
+                self.net.eval()
+                logits, _ = self.net(x)
+                logits = logits[0].cpu().numpy()
+            
+            # Get legal actions
+            legals = get_legal_actions(game)
+            if not legals:
+                break
+            
+            # Mask illegal moves
+            legal_mask = np.zeros(ACTION_SIZE, dtype=np.float32)
+            for action in legals:
+                idx = action_to_index(*action)
+                legal_mask[idx] = 1.0
+            
+            # Apply mask and compute policy
+            masked_logits = logits * legal_mask - (1 - legal_mask) * 1e9
+            if temp == 0.0:
+                # Greedy
+                probs = np.zeros(ACTION_SIZE, dtype=np.float32)
+                best_idx = np.argmax(masked_logits)
+                probs[best_idx] = 1.0
+            else:
+                # Sample with temperature
+                masked_logits = masked_logits / temp
+                probs = np.exp(masked_logits - np.max(masked_logits))
+                probs = probs * legal_mask
+                if probs.sum() > 0:
+                    probs /= probs.sum()
+                else:
+                    # Fallback: uniform over legal actions
+                    probs = legal_mask / legal_mask.sum()
+            
+            # Sample action
+            action_idx = np.random.choice(ACTION_SIZE, p=probs)
+            action = index_to_action(action_idx)
+            
+            # Record training data
+            turn_training_data.append((state_before, action, probs, action_idx))
+            
+            # Apply action
+            result = apply_action(game, *action)
+            if "Invalid" in result:
+                # Invalid action - end turn
+                break
+            
+            turn_actions.append(action)
+            
+            # Check if turn ended
+            if action[0] == ACTION_END_TURN:
+                break
+        
+        return turn_actions, turn_training_data
+    
+    def run(self, game: Game):
+        """
+        Run MCTS from current game state.
+        
+        Returns:
+            pi: np.array(ACTION_SIZE) - action-level policy from visit counts
+            root_q: float - MCTS root Q-value
+            q_values: np.array(ACTION_SIZE) - per-action Q at root
+        """
+        # Initialize root node
+        root_key = self.state_key(game)
+        if root_key not in self.node_map:
+            # Generate initial turn for root
+            game_copy = copy_game(game)
+            turn_actions, _ = self.generate_turn(game_copy, temp=1.0)
+            state_end = encode_game_state(game_copy)
+            state_end_key = self.state_key(game_copy)
+            
+            root_node = TurnNode(turn_actions, state_end, state_end_key)
+            self.node_map[root_key] = root_node
+            self.root = root_node
+        else:
+            self.root = self.node_map[root_key]
+        
+        # Run simulations
+        for _ in range(self.n_simulations):
+            game_copy = copy_game(game)
+            self._simulate(game_copy, self.root)
+        
+        # Extract action-level policy from root's turn and children
+        # Aggregate visit counts over all actions in all explored turns
+        action_counts = defaultdict(int)
+        action_values = defaultdict(float)
+        
+        # Include root node's own turn (if it has visits)
+        if self.root.visits > 0:
+            for action in self.root.action_sequence:
+                action_idx = action_to_index(*action)
+                action_counts[action_idx] += self.root.visits
+                action_values[action_idx] += self.root.total_value
+        
+        # Count visits to each action in root's children
+        for child in self.root.children:
+            for action in child.action_sequence:
+                action_idx = action_to_index(*action)
+                action_counts[action_idx] += child.visits
+                action_values[action_idx] += child.total_value
+        
+        # Build policy vector
+        legals = get_legal_actions(game)
+        counts = np.zeros(ACTION_SIZE, dtype=np.float32)
+        q_values = np.zeros(ACTION_SIZE, dtype=np.float32)
+        
+        for action in legals:
+            a_idx = action_to_index(*action)
+            counts[a_idx] = action_counts[a_idx]
+            if action_counts[a_idx] > 0:
+                q_values[a_idx] = action_values[a_idx] / action_counts[a_idx]
+        
+        if counts.sum() == 0:
+            # Fallback: uniform over legal actions
+            for action in legals:
+                a_idx = action_to_index(*action)
+                counts[a_idx] = 1.0
+            counts /= counts.sum()
+        
+        pi = counts / counts.sum()
+        
+        # Root Q
+        root_q = self.root.value if self.root.visits > 0 else 0.0
+        
+        return pi, root_q, q_values
+    
+    def _simulate(self, game: Game, node: TurnNode) -> float:
+        """
+        Perform one MCTS simulation from a turn node.
+        
+        Args:
+            game: Game state at turn start (will be modified)
+            node: Current turn node
+            
+        Returns:
+            Value from turn-start player's perspective
+        """
+        # Check terminal state
+        tv = terminal_value(game, game.current_player)
+        if tv is not None:
+            return tv
+        
+        # If node has no children, expand
+        if not node.children:
+            # Generate a turn
+            game_copy = copy_game(game)
+            turn_actions, _ = self.generate_turn(game_copy, temp=1.0)
+            
+            # Evaluate final state (after turn, opponent's perspective)
+            state_end = encode_game_state(game_copy)
+            state_end_key = self.state_key(game_copy)
+            
+            with torch.no_grad():
+                x = torch.tensor(state_end[None, :, :, :], dtype=torch.float32)
+                self.net.eval()
+                _, v_probs = self.net(x)  # [win, lose, draw] probabilities
+                # Convert to expected value: win*1 + lose*(-1) + draw*0
+                v = float(v_probs[0][0] * 1.0 + v_probs[0][1] * (-1.0) + v_probs[0][2] * 0.0)
+            
+            # Negate because we want value from turn-start player's perspective
+            v = -v
+            
+            # Create child node
+            child = TurnNode(turn_actions, state_end, state_end_key)
+            child.cached_value = v
+            node.children.append(child)
+            
+            # Cache the node
+            if state_end_key not in self.node_map:
+                self.node_map[state_end_key] = child
+            
+            return v
+        
+        # Selection: Choose child with highest UCB
+        best_child = None
+        best_ucb = -1e9
+        
+        for child in node.children:
+            if child.visits == 0:
+                # Unvisited child - use cached value
+                q = child.cached_value if child.cached_value is not None else 0.0
+                ucb = q + CPUCT * math.sqrt(math.log(node.visits + 1) / (1 + child.visits))
+            else:
+                q = child.value
+                ucb = q + CPUCT * math.sqrt(math.log(node.visits + 1) / (1 + child.visits))
+            
+            if ucb > best_ucb:
+                best_ucb = ucb
+                best_child = child
+        
+        if best_child is None:
+            # No children (shouldn't happen)
+            return 0.0
+        
+        # Replay turn to get to child's state
+        for action in best_child.action_sequence:
+            apply_action(game, *action)
+        
+        # Continue simulation from child's state
+        v = -self._simulate(game, best_child)  # Negate because opponent's turn
+        
+        # Backup
+        node.visits += 1
+        node.total_value += v
+        
+        return v
+
+
+def azero_choose_move(net: ZatikonNet,
+                     game: Game,
+                     mcts_sims: int,
+                     temp: float = 1.0) -> Tuple[Tuple[int, int, int], np.ndarray, float, np.ndarray]:
+    """
+    Choose a move using AlphaZero MCTS.
+    
+    Returns:
+        (action, pi, root_q, q_values)
+    """
+    mcts = MCTS(net, n_simulations=mcts_sims)
+    pi, root_q, q_values = mcts.run(game)
+    
+    legals = get_legal_actions(game)
+    legal_idxs = [action_to_index(*action) for action in legals]
+    probs = np.array([pi[i] for i in legal_idxs], dtype=np.float32)
+    
+    if temp == 0.0:
+        best_idx = int(np.argmax(probs))
+        chosen = legals[best_idx]
+    else:
+        probs = probs ** (1.0 / temp)
+        if probs.sum() <= 0:
+            probs = np.ones_like(probs) / len(probs)
+        else:
+            probs /= probs.sum()
+        idx = np.random.choice(len(legals), p=probs)
+        chosen = legals[idx]
+    
+    return chosen, pi, root_q, q_values
+
+
+# ---------- Self-play & Training ----------
+
+def self_play_game_with_display(net: ZatikonNet,
+                                mcts_sims: int = 50,
+                                temperature_moves: int = 10,
+                                max_turns: int = 300,
+                                game_number: int = 0):
+    """
+    Play one self-play game with display.
+    
+    Same as self_play_game but displays the game as it's played.
+    """
+    from zatikon.training_display import display_turn, display_game_summary
+    import time as time_module
+    
+    # Initialize game
+    game = Game()
+    
+    # Add initial units to barracks (matching ai_client setup)
+    from zatikon.unit_factory import UnitFactory
+    
+    for _ in range(5):
+        footman = UnitFactory.create_unit(constants.UNIT_FOOTMAN, game.castle1)
+        game.castle1.add_unit(footman)
+
+    for _ in range(5):
+        bear = UnitFactory.create_unit(constants.UNIT_BEAR, game.castle1)
+        game.castle1.add_unit(bear)
+
+    for _ in range(5):
+        footman = UnitFactory.create_unit(constants.UNIT_FOOTMAN, game.castle2)
+        game.castle2.add_unit(footman)
+
+    for _ in range(5):
+        bear = UnitFactory.create_unit(constants.UNIT_BEAR, game.castle2)
+        game.castle2.add_unit(bear)
+    
+    game.start_turn()
+    
+    # Action-level training data: (state_before_action, policy, z)
+    action_history = []
+    action_number = 0
+    game_start_time = time.time()
+    
+    # Use game.turn_number as source of truth (starts at 0, increments when END_TURN is processed)
+    while not game.is_over() and game.turn_number < max_turns:
+        turn_start_player = game.current_player
+        
+        # Use MCTS to get action-level policy
+        temp = 1.0 if action_number < temperature_moves else 0.3
+        mcts = MCTS(net, n_simulations=mcts_sims)
+        pi, _, _ = mcts.run(game)
+        
+        # Generate a turn by sampling actions from MCTS policy
+        turn_actions = []
+        turn_training_data = []
+        game_copy = copy_game(game)
+        
+        while True:
+            # Check terminal
+            tv = terminal_value(game_copy, game_copy.current_player)
+            if tv is not None:
+                # Terminal state reached - ensure turn ends properly
+                if not turn_actions or turn_actions[-1][0] != ACTION_END_TURN:
+                    turn_actions.append((ACTION_END_TURN, 0, 0))
+                break
+            
+            # Get state before action
+            state_before = encode_game_state(game_copy)
+            
+            # Get legal actions
+            legals = get_legal_actions(game_copy)
+            if not legals:
+                # No legal actions - ensure turn ends properly
+                if not turn_actions or turn_actions[-1][0] != ACTION_END_TURN:
+                    turn_actions.append((ACTION_END_TURN, 0, 0))
+                break
+            
+            # Sample action from MCTS policy
+            legal_mask = np.zeros(ACTION_SIZE, dtype=np.float32)
+            for action in legals:
+                idx = action_to_index(*action)
+                legal_mask[idx] = 1.0
+            
+            # Mask and normalize policy
+            masked_pi = pi * legal_mask
+            if masked_pi.sum() > 0:
+                masked_pi /= masked_pi.sum()
+            else:
+                # Fallback: uniform
+                masked_pi = legal_mask / legal_mask.sum()
+            
+            # Sample with temperature
+            if temp == 0.0:
+                action_idx = np.argmax(masked_pi)
+            else:
+                temp_pi = masked_pi ** (1.0 / temp)
+                temp_pi /= temp_pi.sum()
+                action_idx = np.random.choice(ACTION_SIZE, p=temp_pi)
+            
+            action = index_to_action(action_idx)
+            
+            # CRITICAL: Re-validate action against CURRENT state
+            # Actions may become invalid if unit moved or state changed
+            # (e.g., action was (MOVE, location_A, location_B) but unit is now at location_C)
+            current_legals = get_legal_actions(game_copy)
+            if action not in current_legals:
+                # Action is no longer legal - skip it and try again
+                # Don't record training data for invalid actions
+                continue
+            
+            # Get value estimate for this state from network
+            state_tensor = torch.tensor(state_before[None, :, :, :], dtype=torch.float32)
+            with torch.no_grad():
+                net.eval()
+                _, v_probs = net(state_tensor)
+                # Extract probability vector (handle both 1D and 2D tensors)
+                if v_probs.dim() == 2:
+                    prob_vec = v_probs[0]  # (1, 3) -> (3,)
+                else:
+                    prob_vec = v_probs  # already (3,)
+                
+                # Adjust to Player 1's perspective
+                if game_copy.current_player == constants.TEAM_2:
+                    prob_vec = torch.tensor([float(prob_vec[1]), float(prob_vec[0]), float(prob_vec[2])], dtype=torch.float32)
+                
+                # Convert to list format [win, lose, draw]
+                state_value = prob_vec.cpu().numpy().tolist()
+                # Ensure it's a list of 3 floats
+                if not isinstance(state_value, list) or len(state_value) != 3:
+                    state_value = [float(state_value[0]), float(state_value[1]), float(state_value[2])]
+
+            # Record training data with value estimate for this specific state
+            turn_training_data.append((state_before, pi, state_value))
+            
+            # Apply action
+            result = apply_action(game_copy, *action)
+            if "Invalid" in result:
+                # Invalid action detected - ensure turn ends properly
+                # Check if turn hasn't ended yet
+                if not turn_actions or turn_actions[-1][0] != ACTION_END_TURN:
+                    # Add END_TURN to complete the turn
+                    turn_actions.append((ACTION_END_TURN, 0, 0))
+                break
+            
+            turn_actions.append(action)
+            
+            # Check if turn ended
+            if action[0] == ACTION_END_TURN:
+                break
+        
+        # Ensure turn always ends with END_TURN (safety check)
+        if not turn_actions or turn_actions[-1][0] != ACTION_END_TURN:
+            turn_actions.append((ACTION_END_TURN, 0, 0))
+        
+        # Evaluate turn value (from Player 1's perspective)
+        # Apply turn to actual game and check if it ended
+        game_ended = False
+        for action in turn_actions:
+            result = apply_action(game, *action)
+            if "Invalid" in result:
+                break
+
+        # Check for terminal state after applying turn
+        tv = terminal_value(game, turn_start_player)
+        if tv is not None:
+            game_ended = True
+            # Game ended - create target probabilities [win, lose, draw] from Player 1's perspective
+            winner = game.check_victory()
+            if winner is None:
+                # Draw
+                turn_value = [0.0, 0.0, 1.0]
+            else:
+                # Check if Player 1 won
+                if winner == game.castle1:
+                    # Player 1 won
+                    turn_value = [1.0, 0.0, 0.0]
+                else:
+                    # Player 2 won (Player 1 lost)
+                    turn_value = [0.0, 1.0, 0.0]
+        else:
+            # Non-terminal - use network prediction
+            # After END_TURN, game.current_player has switched to the NEXT player
+            # But we want the value from turn_start_player's perspective (the player who just played)
+            # Network outputs from current_player's perspective (the NEXT player)
+            # So we need to flip if turn_start_player != current_player
+            final_state = encode_game_state(game)
+            with torch.no_grad():
+                x = torch.tensor(final_state[None, :, :, :], dtype=torch.float32)
+                net.eval()
+                _, v_probs = net(x)  # [win, lose, draw] probabilities from current_player's perspective (NEXT player)
+
+            # Adjust network output to Player 1's perspective
+            # Network outputs from current_player's perspective (the NEXT player after END_TURN)
+            # We want Player 1's perspective for consistency
+            # Extract the probability vector first (handle both 1D and 2D tensors)
+            if v_probs.dim() == 2:
+                if v_probs.size(0) > 0 and v_probs.size(1) >= 3:
+                    prob_vec = v_probs[0]  # (1, 3) -> (3,)
+                else:
+                    # Fallback: uniform probabilities
+                    prob_vec = torch.tensor([1.0/3, 1.0/3, 1.0/3], dtype=torch.float32)
+            elif v_probs.dim() == 1:
+                if v_probs.size(0) >= 3:
+                    prob_vec = v_probs  # already (3,)
+                else:
+                    # Fallback: uniform probabilities
+                    prob_vec = torch.tensor([1.0/3, 1.0/3, 1.0/3], dtype=torch.float32)
+            else:
+                # Unexpected shape - use uniform probabilities
+                prob_vec = torch.tensor([1.0/3, 1.0/3, 1.0/3], dtype=torch.float32)
+            
+            # Ensure prob_vec has at least 3 elements before indexing
+            if prob_vec.size(0) < 3:
+                prob_vec = torch.tensor([1.0/3, 1.0/3, 1.0/3], dtype=torch.float32)
+            
+            # Adjust to Player 1's perspective based on current_player (who the network output is from)
+            # After END_TURN, current_player is the NEXT player
+            # If current_player == TEAM_1, network output is already from Player 1's perspective
+            # If current_player == TEAM_2, we need to flip win/lose to get Player 1's perspective
+            if game.current_player == constants.TEAM_2:
+                # Network output is from Team 2's perspective, flip to get Player 1's perspective
+                # From Team 2's perspective: [win, lose, draw] = [Team2 wins, Team2 loses, draw]
+                # From Player 1's perspective: [win, lose, draw] = [Team1 wins, Team1 loses, draw]
+                # Team1 wins = Team2 loses, Team1 loses = Team2 wins
+                prob_vec = torch.tensor([float(prob_vec[1]), float(prob_vec[0]), float(prob_vec[2])], dtype=torch.float32)
+            # If current_player == TEAM_1, prob_vec is already from Player 1's perspective, no flip needed
+            
+            # Extract final probability vector (should be 1D tensor of size 3)
+            if prob_vec.dim() == 1 and prob_vec.size(0) == 3:
+                prob_vector = prob_vec
+            elif prob_vec.dim() == 1 and prob_vec.size(0) > 0:
+                # Handle unexpected sizes - take first 3 elements or pad
+                if prob_vec.size(0) >= 3:
+                    prob_vector = prob_vec[:3]
+                else:
+                    # Pad with zeros if needed (shouldn't happen)
+                    prob_vector = torch.cat([prob_vec, torch.zeros(3 - prob_vec.size(0), dtype=prob_vec.dtype)])
+            else:
+                # Fallback: try to extract first element if 2D
+                if prob_vec.dim() == 2 and prob_vec.size(0) > 0:
+                    prob_vector = prob_vec[0]
+                else:
+                    # Last resort: return uniform probabilities
+                    prob_vector = torch.tensor([1.0/3, 1.0/3, 1.0/3], dtype=torch.float32)
+
+            turn_value = prob_vector.cpu().numpy().tolist()
+        
+        # Record action-level training data (values already set for each state)
+        for state_before, policy, state_value in turn_training_data:
+            action_history.append((state_before, policy, state_value))
+
+        action_number += len(turn_actions)
+
+        # Display turn AFTER computing value estimate (so board state is current)
+        # game.turn_number is 0-indexed, so add 1 for display (1-indexed)
+        # Don't clear screen - append to history so user can scroll up
+        # Show neural network value estimate from the perspective of the player who just played
+        # (turn_value is already adjusted to Player 1's perspective)
+        # After END_TURN, current_player has switched, so we show value if the player who JUST played was Team 1
+        # turn_start_player is the player who just played the turn
+        value_estimate = turn_value if turn_start_player == constants.TEAM_1 else None
+        display_turn(game, turn_actions, game.turn_number + 1, game_number, clear=False, value_estimate=value_estimate)
+        #time.sleep(0.5)  # Brief pause to see the turn
+
+        # If game ended, return training data
+        if game_ended:
+            game_time = time.time() - game_start_time
+            # tv > 0 means current_player wins, tv < 0 means current_player loses
+            winner = game.current_player if tv > 0 else (constants.TEAM_2 if game.current_player == constants.TEAM_1 else constants.TEAM_1) if tv < 0 else None
+            display_game_summary(game, game_number, winner, game.turn_number, game_time, clear=False)
+            time.sleep(2)  # Pause to see summary
+
+            # Return training data with individual state values (not final game outcome)
+            # Each state already has its proper value estimate from the network
+            return action_history, winner
+    
+    # Game ended due to turn limit (treat as draw)
+    game_time = time.time() - game_start_time
+    display_game_summary(game, game_number, None, game.turn_number, game_time, clear=False)
+    time.sleep(2)
+
+    examples = [(p, pi_vec, [0.0, 0.0, 1.0]) for (p, pi_vec, _) in action_history]
+    return examples, None
+
+
+def self_play_game(net: ZatikonNet,
+                   mcts_sims: int = 50,
+                   temperature_moves: int = 10,
+                   max_turns: int = 300):
+    """
+    Play one self-play game with MCTS+net.
+    
+    Uses turn-based MCTS but records action-level training data.
+    
+    Returns:
+        List of (planes, pi, z) tuples (action-level) and winner
+    """
+    # Initialize game
+    game = Game()
+    
+    # Add initial units to barracks (matching ai_client setup)
+    from zatikon.unit_factory import UnitFactory
+    
+    for _ in range(5):
+        footman = UnitFactory.create_unit(constants.UNIT_FOOTMAN, game.castle1)
+        game.castle1.add_unit(footman)
+
+    for _ in range(5):
+        bear = UnitFactory.create_unit(constants.UNIT_BEAR, game.castle1)
+        game.castle1.add_unit(bear)
+
+    for _ in range(5):
+        footman = UnitFactory.create_unit(constants.UNIT_FOOTMAN, game.castle2)
+        game.castle2.add_unit(footman)
+
+    for _ in range(5):
+        bear = UnitFactory.create_unit(constants.UNIT_BEAR, game.castle2)
+        game.castle2.add_unit(bear)
+    
+    game.start_turn()
+    
+    # Action-level training data: (state_before_action, policy, z)
+    action_history = []
+    action_number = 0
+    
+    # Use game.turn_number as source of truth (starts at 0, increments when END_TURN is processed)
+    while not game.is_over() and game.turn_number < max_turns:
+        turn_start_player = game.current_player
+        
+        # Use MCTS to get action-level policy
+        temp = 1.0 if action_number < temperature_moves else 0.3
+        mcts = MCTS(net, n_simulations=mcts_sims)
+        pi, _, _ = mcts.run(game)
+        
+        # Generate a turn by sampling actions from MCTS policy
+        turn_actions = []
+        turn_training_data = []
+        game_copy = copy_game(game)
+        
+        while True:
+            # Check terminal
+            tv = terminal_value(game_copy, game_copy.current_player)
+            if tv is not None:
+                # Terminal state reached - ensure turn ends properly
+                if not turn_actions or turn_actions[-1][0] != ACTION_END_TURN:
+                    turn_actions.append((ACTION_END_TURN, 0, 0))
+                break
+            
+            # Get state before action
+            state_before = encode_game_state(game_copy)
+            
+            # Get legal actions
+            legals = get_legal_actions(game_copy)
+            if not legals:
+                # No legal actions - ensure turn ends properly
+                if not turn_actions or turn_actions[-1][0] != ACTION_END_TURN:
+                    turn_actions.append((ACTION_END_TURN, 0, 0))
+                break
+            
+            # Sample action from MCTS policy
+            legal_mask = np.zeros(ACTION_SIZE, dtype=np.float32)
+            for action in legals:
+                idx = action_to_index(*action)
+                legal_mask[idx] = 1.0
+            
+            # Mask and normalize policy
+            masked_pi = pi * legal_mask
+            if masked_pi.sum() > 0:
+                masked_pi /= masked_pi.sum()
+            else:
+                # Fallback: uniform
+                masked_pi = legal_mask / legal_mask.sum()
+            
+            # Sample with temperature
+            if temp == 0.0:
+                action_idx = np.argmax(masked_pi)
+            else:
+                temp_pi = masked_pi ** (1.0 / temp)
+                temp_pi /= temp_pi.sum()
+                action_idx = np.random.choice(ACTION_SIZE, p=temp_pi)
+            
+            action = index_to_action(action_idx)
+            
+            # CRITICAL: Re-validate action against CURRENT state
+            # Actions may become invalid if unit moved or state changed
+            # (e.g., action was (MOVE, location_A, location_B) but unit is now at location_C)
+            current_legals = get_legal_actions(game_copy)
+            if action not in current_legals:
+                # Action is no longer legal - skip it and try again
+                # Don't record training data for invalid actions
+                continue
+            
+            # Get value estimate for this state from network
+            state_tensor = torch.tensor(state_before[None, :, :, :], dtype=torch.float32)
+            with torch.no_grad():
+                net.eval()
+                _, v_probs = net(state_tensor)
+                # Extract probability vector (handle both 1D and 2D tensors)
+                if v_probs.dim() == 2:
+                    prob_vec = v_probs[0]  # (1, 3) -> (3,)
+                else:
+                    prob_vec = v_probs  # already (3,)
+                
+                # Adjust to Player 1's perspective
+                if game_copy.current_player == constants.TEAM_2:
+                    prob_vec = torch.tensor([float(prob_vec[1]), float(prob_vec[0]), float(prob_vec[2])], dtype=torch.float32)
+                
+                # Convert to list format [win, lose, draw]
+                state_value = prob_vec.cpu().numpy().tolist()
+                # Ensure it's a list of 3 floats
+                if not isinstance(state_value, list) or len(state_value) != 3:
+                    state_value = [float(state_value[0]), float(state_value[1]), float(state_value[2])]
+
+            # Record training data with value estimate for this specific state
+            turn_training_data.append((state_before, pi, state_value))
+            
+            # Apply action
+            result = apply_action(game_copy, *action)
+            if "Invalid" in result:
+                # Invalid action detected - ensure turn ends properly
+                # Check if turn hasn't ended yet
+                if not turn_actions or turn_actions[-1][0] != ACTION_END_TURN:
+                    # Add END_TURN to complete the turn
+                    turn_actions.append((ACTION_END_TURN, 0, 0))
+                break
+            
+            turn_actions.append(action)
+            
+            # Check if turn ended
+            if action[0] == ACTION_END_TURN:
+                break
+        
+        # Ensure turn always ends with END_TURN (safety check)
+        if not turn_actions or turn_actions[-1][0] != ACTION_END_TURN:
+            turn_actions.append((ACTION_END_TURN, 0, 0))
+        
+        # Apply turn to actual game and check if it ended
+        game_ended = False
+        for action in turn_actions:
+            result = apply_action(game, *action)
+            if "Invalid" in result:
+                break
+
+        # Check for terminal state after applying turn
+        tv = terminal_value(game, turn_start_player)
+        if tv is not None:
+            game_ended = True
+            # Game ended - create target probabilities [win, lose, draw] from Player 1's perspective
+            winner = game.check_victory()
+            if winner is None:
+                # Draw
+                turn_value = [0.0, 0.0, 1.0]
+            else:
+                # Check if Player 1 won
+                if winner == game.castle1:
+                    # Player 1 won
+                    turn_value = [1.0, 0.0, 0.0]
+                else:
+                    # Player 2 won (Player 1 lost)
+                    turn_value = [0.0, 1.0, 0.0]
+        else:
+            # Non-terminal - use network prediction
+            # Network outputs from current_player's perspective (the NEXT player after END_TURN)
+            # We want Player 1's perspective for consistency
+            final_state = encode_game_state(game)
+            with torch.no_grad():
+                x = torch.tensor(final_state[None, :, :, :], dtype=torch.float32)
+                net.eval()
+                _, v_probs = net(x)  # [win, lose, draw] probabilities from current_player's perspective
+
+            # Extract the probability vector first
+            if v_probs.dim() == 2:
+                prob_vec = v_probs[0]  # (1, 3) -> (3,)
+            else:
+                prob_vec = v_probs  # already (3,)
+            
+            # Adjust to Player 1's perspective based on current_player
+            # If current_player == TEAM_1, network output is already from Player 1's perspective
+            # If current_player == TEAM_2, flip win/lose to get Player 1's perspective
+            if game.current_player == constants.TEAM_2:
+                # Network output is from Team 2's perspective, flip to get Player 1's perspective
+                prob_vec = torch.tensor([float(prob_vec[1]), float(prob_vec[0]), float(prob_vec[2])], dtype=torch.float32)
+            # If current_player == TEAM_1, prob_vec is already from Player 1's perspective, no flip needed
+
+            turn_value = prob_vec.cpu().numpy().tolist()
+        
+        # Record action-level training data (values already set for each state)
+        for state_before, policy, state_value in turn_training_data:
+            action_history.append((state_before, policy, state_value))
+        
+        action_number += len(turn_actions)
+        
+        # If game ended, return training data
+        if game_ended:
+            # Return training data with individual state values (not final game outcome)
+            # Each state already has its proper value estimate from the network
+            winner_team = constants.TEAM_1 if tv > 0 else (constants.TEAM_2 if tv < 0 else None)
+            return action_history, winner_team
+    
+    # Game ended due to turn limit - return training data with individual state values
+    # We don't override with draw values since each state has its own evaluation
+    return action_history, None
+
+
+def train(net: ZatikonNet,
+          n_games: int = 100,
+          batch_size: int = 64,
+          lr: float = 1e-3,
+          mcts_sims: int = 50,
+          start_games: int = 0,
+          save_every: int = 200,
+          eval_every: int = 50,
+          eval_games: int = 10,
+          lr_decay: float = 1.0,
+          device: str = "cpu",
+          optimizer_state: Optional[Dict] = None,
+          display: bool = False):
+    """
+    Train the network via self-play.
+    
+    Args:
+        net: Neural network to train
+        n_games: Number of self-play games to generate
+        batch_size: Batch size for training
+        lr: Initial learning rate
+        mcts_sims: MCTS simulations per move
+        start_games: Starting game count (for resuming)
+        save_every: Save checkpoint every N games
+        eval_every: Evaluate model every N games
+        eval_games: Number of games for evaluation
+        lr_decay: Learning rate decay factor (applied per save_every games)
+        device: Device to use ("cpu" or "cuda")
+        optimizer_state: Optional optimizer state dict to resume from
+        display: If True, display games as they're played
+    """
+    net = net.to(device)
+    opt = torch.optim.Adam(net.parameters(), lr=lr)
+    if optimizer_state is not None:
+        opt.load_state_dict(optimizer_state)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=lr_decay)
+    
+    buffer = deque(maxlen=50_000)
+    games_played = 0
+    team1_wins = 0
+    team2_wins = 0
+    draws = 0
+    
+    # Training statistics
+    train_losses = []
+    value_losses = []
+    policy_losses = []
+    
+    for game_idx in range(n_games):
+        total_games = start_games + game_idx + 1
+        
+        t0 = time.time()
+        if display:
+            game_data, winner = self_play_game_with_display(net, mcts_sims=mcts_sims, game_number=total_games)
+        else:
+            game_data, winner = self_play_game(net, mcts_sims=mcts_sims)
+        buffer.extend(game_data)
+        t1 = time.time()
+        
+        # Update stats
+        games_played += 1
+        if winner == constants.TEAM_1:
+            team1_wins += 1
+        elif winner == constants.TEAM_2:
+            team2_wins += 1
+        else:
+            draws += 1
+        
+        if len(buffer) < batch_size:
+            print(f"[train] game {total_games}: buffer {len(buffer)} (warming up)")
+        else:
+            # Sample minibatch
+            batch = random.sample(buffer, batch_size)
+            
+            # Convert states to tensor (handle numpy arrays properly)
+            states = [b[0] for b in batch]
+            if isinstance(states[0], np.ndarray):
+                planes_batch = torch.from_numpy(np.array(states)).to(device).float()
+            else:
+                planes_batch = torch.tensor(states, dtype=torch.float32).to(device)
+            
+            # Convert policies to tensor
+            policies = [b[1] for b in batch]
+            if isinstance(policies[0], np.ndarray):
+                pi_batch = torch.from_numpy(np.array(policies)).to(device).float()
+            else:
+                pi_batch = torch.tensor(policies, dtype=torch.float32).to(device)
+            
+            # Convert values to tensor (handle list/tuple/numpy array)
+            values = [b[2] for b in batch]
+            # Ensure all values are lists/tuples of length 3
+            values_clean = []
+            for i, v in enumerate(values):
+                try:
+                    if isinstance(v, (list, tuple)) and len(v) == 3:
+                        values_clean.append([float(x) for x in v])
+                    elif isinstance(v, np.ndarray):
+                        if v.shape == (3,):
+                            values_clean.append(v.tolist())
+                        else:
+                            raise ValueError(f"Value {i} has wrong shape: {v.shape}, expected (3,)")
+                    else:
+                        # Try to convert to numpy array first
+                        v_arr = np.array(v, dtype=np.float32)
+                        if v_arr.shape == (3,):
+                            values_clean.append(v_arr.tolist())
+                        else:
+                            raise ValueError(f"Value {i} cannot be converted to shape (3,): type={type(v)}, shape={v_arr.shape}")
+                except Exception as e:
+                    print(f"Error processing value {i}: {v}, type: {type(v)}, error: {e}")
+                    raise
+            
+            z_batch = torch.tensor(values_clean, dtype=torch.float32).to(device)  # (B, 3) - [win, lose, draw] probabilities
+
+            net.train()
+            logits, v_probs = net(planes_batch)  # v_probs is (B, 3)
+            log_probs = F.log_softmax(logits, dim=1)
+
+            # Cross-entropy loss for value probabilities
+            value_loss = -(z_batch * torch.log(v_probs + 1e-8)).sum(dim=1).mean()
+            policy_loss = -(pi_batch * log_probs).sum(dim=1).mean()
+            loss = value_loss + policy_loss
+            
+            opt.zero_grad()
+            loss.backward()
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
+            opt.step()
+            
+            # Record losses
+            train_losses.append(loss.item())
+            value_losses.append(value_loss.item())
+            policy_losses.append(policy_loss.item())
+            
+            t2 = time.time()
+            if total_games % 5 == 0 or total_games == start_games + 1:
+                avg_loss = np.mean(train_losses[-100:]) if len(train_losses) > 0 else 0.0
+                avg_v_loss = np.mean(value_losses[-100:]) if len(value_losses) > 0 else 0.0
+                avg_p_loss = np.mean(policy_losses[-100:]) if len(policy_losses) > 0 else 0.0
+                
+                print(f"[train] game {total_games}: "
+                      f"loss={loss.item():.4f} (avg={avg_loss:.4f}), "
+                      f"v_loss={value_loss.item():.4f} (avg={avg_v_loss:.4f}), "
+                      f"p_loss={policy_loss.item():.4f} (avg={avg_p_loss:.4f}), "
+                      f"team1_win={team1_wins/games_played:.3f}, "
+                      f"team2_win={team2_wins/games_played:.3f}, "
+                      f"draw_rate={draws/games_played:.3f}, "
+                      f"game_time={t1-t0:.1f}s, train_time={t2-t1:.3f}s, "
+                      f"buffer={len(buffer)}, lr={opt.param_groups[0]['lr']:.6f}")
+        
+        # Evaluation
+        if eval_every > 0 and total_games % eval_every == 0:
+            eval_win_rate = evaluate_model(net, n_games=eval_games, device=device)
+            print(f"[eval] game {total_games}: win_rate={eval_win_rate:.3f} vs RandomAI")
+        
+        # Learning rate decay
+        if total_games % save_every == 0 and lr_decay < 1.0:
+            scheduler.step()
+        
+        # Periodic checkpoint
+        if total_games % save_every == 0:
+            save_model(net, total_games, opt, {
+                'train_losses': train_losses[-1000:],
+                'value_losses': value_losses[-1000:],
+                'policy_losses': policy_losses[-1000:],
+                'team1_wins': team1_wins,
+                'team2_wins': team2_wins,
+                'draws': draws,
+                'games_played': games_played,
+            }, training_data=buffer)
+    
+    # Save final checkpoint
+    final_total = start_games + n_games
+    save_model(net, final_total, opt, {
+        'train_losses': train_losses[-1000:],
+        'value_losses': value_losses[-1000:],
+        'policy_losses': policy_losses[-1000:],
+        'team1_wins': team1_wins,
+        'team2_wins': team2_wins,
+        'draws': draws,
+        'games_played': games_played,
+    })
+    print(f"[train] Finished {n_games} games (total {final_total}).")
+
+
+# ---------- Model save/load ----------
+
+MODEL_PATTERN = "zatikon_net_g*.pt"
+LATEST_MODEL = "zatikon_net_latest.pt"
+
+
+def find_all_models():
+    """Return sorted list of (games, path) for all model files."""
+    files = glob.glob(MODEL_PATTERN)
+    models = []
+    for path in files:
+        base = os.path.basename(path)
+        try:
+            part = base.split("_g", 1)[1]
+            num_str = part.split(".pt", 1)[0]
+            games = int(num_str)
+            models.append((games, path))
+        except Exception:
+            continue
+    models.sort(key=lambda x: x[0])
+    return models
+
+
+def save_model(net: ZatikonNet, total_games: int, optimizer=None, metadata=None, training_data=None):
+    """
+    Save checkpoint.
+
+    Args:
+        net: Neural network
+        total_games: Total number of games played
+        optimizer: Optimizer state (optional)
+        metadata: Additional metadata to save (optional)
+        training_data: Training data buffer to save (optional, can be large)
+    """
+    checkpoint = {
+        'model_state_dict': net.state_dict(),
+        'total_games': total_games,
+    }
+
+    if optimizer is not None:
+        checkpoint['optimizer_state_dict'] = optimizer.state_dict()
+
+    if metadata is not None:
+        checkpoint['metadata'] = metadata
+
+    if training_data is not None:
+        # Save a sample of the training data for analysis in checkpoint
+        sample_size = min(1000, len(training_data))
+        checkpoint['training_data_sample'] = random.sample(training_data, sample_size)
+        checkpoint['training_data_sample_size'] = sample_size
+        checkpoint['training_data_total_size'] = len(training_data)
+        
+        # Save full training data to separate file
+        training_data_path = f"training_data_g{total_games}.pkl"
+        training_data_dict = {
+            'training_data': list(training_data),  # Convert deque to list for serialization
+            'total_games': total_games,
+            'data_size': len(training_data),
+            'metadata': metadata if metadata else {}
+        }
+        with open(training_data_path, 'wb') as f:
+            pickle.dump(training_data_dict, f)
+        print(f"[save] Saved full training data ({len(training_data)} examples) to {training_data_path}")
+        
+        # Also save as latest for easy access
+        latest_training_data_path = "training_data_latest.pkl"
+        with open(latest_training_data_path, 'wb') as f:
+            pickle.dump(training_data_dict, f)
+        print(f"[save] Also saved as {latest_training_data_path}")
+    
+    path = f"zatikon_net_g{total_games}.pt"
+    torch.save(checkpoint, path)
+    
+    # Also save as latest
+    checkpoint['latest'] = True
+    torch.save(checkpoint, LATEST_MODEL)
+    
+    print(f"[save] Saved checkpoint to {path} and {LATEST_MODEL}")
+
+
+def load_training_data(training_data_path: str):
+    """
+    Load training data from a separate pickle file.
+    
+    Args:
+        training_data_path: Path to the training data pickle file (e.g., "training_data_g200.pkl")
+        
+    Returns:
+        Dictionary with keys:
+            - 'training_data': List of (state, policy, value) tuples
+            - 'total_games': Total games played when saved
+            - 'data_size': Number of training examples
+            - 'metadata': Additional metadata
+    
+    Example:
+        data = load_training_data("training_data_g200.pkl")
+        states, policies, values = zip(*data['training_data'])
+    """
+    with open(training_data_path, 'rb') as f:
+        data = pickle.load(f)
+    return data
+
+
+def load_latest_model(net: ZatikonNet, optimizer=None, device="cpu"):
+    """
+    Load latest checkpoint.
+    
+    Args:
+        net: Neural network to load into
+        optimizer: Optimizer to load state into (optional)
+        device: Device to load on
+        
+    Returns:
+        (total_games, metadata) tuple where metadata includes optimizer_state_dict if available
+    """
+    models = find_all_models()
+    if models:
+        games, path = models[-1]
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+        net.load_state_dict(checkpoint['model_state_dict'])
+        
+        if optimizer is not None and 'optimizer_state_dict' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        metadata = checkpoint.get('metadata', {})
+        if 'optimizer_state_dict' in checkpoint:
+            metadata['optimizer_state_dict'] = checkpoint['optimizer_state_dict']
+        
+        print(f"[load] Loaded latest checkpoint {path} (after {games} games).")
+        return games, metadata
+    
+    if os.path.exists(LATEST_MODEL):
+        checkpoint = torch.load(LATEST_MODEL, map_location=device, weights_only=False)
+        net.load_state_dict(checkpoint['model_state_dict'])
+        
+        if optimizer is not None and 'optimizer_state_dict' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        metadata = checkpoint.get('metadata', {})
+        if 'optimizer_state_dict' in checkpoint:
+            metadata['optimizer_state_dict'] = checkpoint['optimizer_state_dict']
+        total_games = checkpoint.get('total_games', 0)
+        print(f"[load] Loaded {LATEST_MODEL} (after {total_games} games).")
+        return total_games, metadata
+    
+    print("[load] No existing model found, starting from scratch.")
+    return 0, {}
+
+
+def evaluate_model(net: ZatikonNet, n_games: int = 10, device: str = "cpu"):
+    """
+    Evaluate model by playing against RandomAI.
+    
+    Args:
+        net: Neural network to evaluate
+        n_games: Number of games to play
+        device: Device to use
+        
+    Returns:
+        Win rate (0.0 to 1.0)
+    """
+    from zatikon.random_ai import RandomAI
+    
+    net.eval()
+    wins = 0
+    losses = 0
+    draws = 0
+    
+    for game_idx in range(n_games):
+        game = Game()
+        
+        # Add initial units
+        from zatikon.unit_factory import UnitFactory
+        
+        for _ in range(3):
+            footman = UnitFactory.create_unit(constants.UNIT_FOOTMAN, game.castle1)
+            game.castle1.add_unit(footman)
+        bear = UnitFactory.create_unit(constants.UNIT_BEAR, game.castle1)
+        game.castle1.add_unit(bear)
+        
+        for _ in range(3):
+            footman = UnitFactory.create_unit(constants.UNIT_FOOTMAN, game.castle2)
+            game.castle2.add_unit(footman)
+        bear = UnitFactory.create_unit(constants.UNIT_BEAR, game.castle2)
+        game.castle2.add_unit(bear)
+        
+        game.start_turn()
+        
+        # RandomAI plays as Team 1, Net plays as Team 2
+        random_ai = RandomAI(game, constants.TEAM_1)
+        
+        turn_count = 0
+        while not game.is_over() and turn_count < 300:
+            if game.current_player == constants.TEAM_1:
+                # RandomAI turn
+                random_ai.execute_turn()
+            else:
+                # Net turn
+                mcts = MCTS(net, n_simulations=25)  # Fewer sims for faster eval
+                pi, _, _ = mcts.run(game)
+                
+                # Sample action from policy
+                legals = get_legal_actions(game)
+                legal_mask = np.zeros(ACTION_SIZE, dtype=np.float32)
+                for action in legals:
+                    idx = action_to_index(*action)
+                    legal_mask[idx] = 1.0
+                
+                masked_pi = pi * legal_mask
+                if masked_pi.sum() > 0:
+                    masked_pi /= masked_pi.sum()
+                    action_idx = np.random.choice(ACTION_SIZE, p=masked_pi)
+                    action = index_to_action(action_idx)
+                    apply_action(game, *action)
+                else:
+                    # No legal moves, end turn
+                    apply_action(game, ACTION_END_TURN, 0, 0)
+            
+            turn_count += 1
+        
+        # Check winner
+        if game.is_over():
+            winner = game.check_victory()
+            if winner == game.castle2:  # Net wins
+                wins += 1
+            elif winner == game.castle1:  # RandomAI wins
+                losses += 1
+            else:
+                draws += 1
+        else:
+            draws += 1
+    
+    win_rate = wins / n_games
+    return win_rate
+
+
+def analyze_training_data(checkpoint_path: str):
+    """
+    Analyze saved training data to understand what's being learned.
+    """
+    import torch
+
+    print(f"Loading checkpoint: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+
+    if 'training_data_sample' in checkpoint:
+        training_data = checkpoint['training_data_sample']
+        total_samples = checkpoint.get('training_data_sample_size', len(training_data))
+        total_size = checkpoint.get('training_data_total_size', total_samples)
+
+        print(f"Training data sample: {total_samples} out of {total_size} total examples")
+
+        # Analyze value distributions
+        win_probs = []
+        lose_probs = []
+        draw_probs = []
+        expected_values = []
+
+        for state, policy, value in training_data:
+            if isinstance(value, list) and len(value) == 3:
+                win_prob, lose_prob, draw_prob = value
+                win_probs.append(win_prob)
+                lose_probs.append(lose_prob)
+                draw_probs.append(draw_prob)
+                expected_values.append(win_prob * 1.0 + lose_prob * (-1.0) + draw_prob * 0.0)
+
+        if win_probs:
+            import numpy as np
+            print("\nValue distribution analysis:")
+            print(".3f")
+            print(".3f")
+            print(".3f")
+            print(".3f")
+            print(".3f")
+            print(".3f")
+
+            # Count how many examples have high draw probability
+            high_draw_count = sum(1 for p in draw_probs if p > 0.5)
+            print(f"Examples with draw prob > 0.5: {high_draw_count}/{len(draw_probs)} ({high_draw_count/len(draw_probs)*100:.1f}%)")
+
+            # Show some example values
+            print("\nSample values (win, lose, draw, EV):")
+            for i in range(min(10, len(win_probs))):
+                print(".3f")
+        else:
+            print("No valid value data found in training sample")
+
+    else:
+        print("No training data sample found in checkpoint")
+
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="AlphaZero-style Zatikon engine")
+    parser.add_argument("--mode", choices=["train", "eval", "analyze"], default="train",
+                       help="Mode: 'train' for self-play training, 'eval' for evaluation, 'analyze' for analyzing saved checkpoints")
+    parser.add_argument("--train_games", type=int, default=100,
+                       help="Number of self-play games")
+    parser.add_argument("--mcts_sims", type=int, default=50,
+                       help="MCTS simulations per move")
+    parser.add_argument("--lr", type=float, default=1e-3,
+                       help="Learning rate")
+    parser.add_argument("--batch_size", type=int, default=64,
+                       help="Batch size")
+    parser.add_argument("--save_every", type=int, default=200,
+                       help="Save checkpoint every N games")
+    parser.add_argument("--eval_every", type=int, default=50,
+                       help="Evaluate model every N games")
+    parser.add_argument("--eval_games", type=int, default=10,
+                       help="Number of games for evaluation")
+    parser.add_argument("--lr_decay", type=float, default=0.99,
+                       help="Learning rate decay factor")
+    parser.add_argument("--device", type=str, default="cpu",
+                       help="Device to use (cpu or cuda)")
+    parser.add_argument("--model_path", type=str, default=None,
+                       help="Path to model file for evaluation")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                       help="Checkpoint file to analyze (for analyze mode)")
+    parser.add_argument("--display", action="store_true",
+                       help="Display games as they're played during training")
+    parser.add_argument("--test_game", action="store_true",
+                       help="Play a single test game and exit (useful for debugging)")
+    args = parser.parse_args()
+    
+    device = args.device
+    if device == "cuda" and not torch.cuda.is_available():
+        print("[warn] CUDA not available, using CPU")
+        device = "cpu"
+    
+    net = ZatikonNet()
+
+    if args.mode == "analyze":
+        if not args.checkpoint:
+            print("[error] --checkpoint is required for analyze mode")
+            exit(1)
+        analyze_training_data(args.checkpoint)
+        exit(0)
+
+    if args.mode == "train":
+        if args.test_game:
+            # Test mode: play a single game with display
+            print("[test] Playing a single test game...")
+            start_games, metadata = load_latest_model(net, device=device)
+            
+            if args.display:
+                game_data, winner = self_play_game_with_display(net, mcts_sims=args.mcts_sims, game_number=1)
+            else:
+                game_data, winner = self_play_game(net, mcts_sims=args.mcts_sims)
+            
+            print(f"\n[test] Game complete!")
+            print(f"  Training examples: {len(game_data)}")
+            if winner:
+                winner_name = "Team 1" if winner == constants.TEAM_1 else "Team 2"
+                print(f"  Winner: {winner_name}")
+            else:
+                print(f"  Result: Draw")
+            import sys
+            sys.exit(0)
+        
+        start_games, metadata = load_latest_model(net, device=device)
+        optimizer_state = None
+        if metadata and 'optimizer_state_dict' in metadata:
+            optimizer_state = metadata['optimizer_state_dict']
+        
+        print(f"[train] Starting training for {args.train_games} games "
+              f"from game count {start_games}.")
+        train(net,
+              n_games=args.train_games,
+              batch_size=args.batch_size,
+              lr=args.lr,
+              mcts_sims=args.mcts_sims,
+              start_games=start_games,
+              save_every=args.save_every,
+              eval_every=args.eval_every,
+              eval_games=args.eval_games,
+              lr_decay=args.lr_decay,
+              device=device,
+              optimizer_state=optimizer_state,
+              display=args.display)
+    
+    elif args.mode == "eval":
+        model_path = args.model_path or LATEST_MODEL
+        if os.path.exists(model_path):
+            checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+            net.load_state_dict(checkpoint['model_state_dict'])
+            total_games = checkpoint.get('total_games', 0)
+            print(f"[eval] Loaded model from {model_path} (after {total_games} games)")
+        else:
+            print(f"[eval] Model not found at {model_path}, using untrained model")
+        
+        win_rate = evaluate_model(net, n_games=args.eval_games, device=device)
+        print(f"[eval] Win rate vs RandomAI: {win_rate:.3f} ({win_rate*args.eval_games:.0f}/{args.eval_games})")
+
